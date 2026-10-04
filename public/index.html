@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KoeSub - Japanese AI Video Subtitler & Synchronized Player</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&family=Noto+Sans+Devanagari:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-icon">🎌</div>
+        <div>
+          <h1>KoeSub <span class="badge-ja">声サブ</span></h1>
+          <p class="subtitle">Japanese Video AI Subtitler & Synchronized Player</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div id="apiKeyStatus" class="status-chip checking">
+          <span class="dot"></span>
+          <span class="text">Checking API...</span>
+        </div>
+        <button id="activityLogToggleBtn" class="btn btn-ghost" title="View Full Activity Log">
+          📋 Activity Log <span id="logBadgeCount" class="badge-mini">0</span>
+        </button>
+        <button id="settingsBtn" class="btn btn-ghost" title="Settings & Custom APIs">⚙️ Settings</button>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      
+      <!-- STEP 1: Upload Video & Target Language -->
+      <section id="step1Section" class="card step-card">
+        <div class="section-badge">Step 1</div>
+        <h2 class="section-title">Upload Video & Select Subtitle Language</h2>
+        <p class="section-desc">Upload your Japanese video and choose your preferred language for the AI subtitles.</p>
+
+        <!-- Video Upload Dropzone -->
+        <div class="upload-dropzone" id="dropZone">
+          <input type="file" id="videoFileInput" accept="video/mp4,video/x-matroska,video/webm,video/quicktime,video/x-msvideo" hidden>
+          <div class="dropzone-icon">🎬</div>
+          <h3>Select or Drop a Japanese Video</h3>
+          <p class="dropzone-desc">Supports MP4, MKV, WebM, MOV, AVI (up to 2GB)</p>
+          <button type="button" class="btn btn-primary" id="browseBtn">Browse Video File</button>
+          
+          <div id="fileInfoBox" class="file-info-box hidden">
+            <div class="file-info-main">
+              <span class="file-icon">📹</span>
+              <div>
+                <div class="file-name" id="fileNameDisplay">video.mp4</div>
+                <div class="file-size" id="fileSizeDisplay">0 MB</div>
+              </div>
+            </div>
+            <button type="button" class="btn-clear" id="clearFileBtn" title="Remove file">✕</button>
+          </div>
+        </div>
+
+        <!-- Target Language Selector -->
+        <div class="config-row">
+          <div class="config-group">
+            <label class="config-label">Target Subtitle Language:</label>
+            <div class="radio-pill-group">
+              <label class="radio-pill">
+                <input type="radio" name="targetLang" value="en" checked>
+                <span>🇬🇧 English (Default)</span>
+              </label>
+              <label class="radio-pill">
+                <input type="radio" name="targetLang" value="hi">
+                <span>🇮🇳 Hindi (हिन्दी)</span>
+              </label>
+              <label class="radio-pill">
+                <input type="radio" name="targetLang" value="both">
+                <span>🌐 Both (English + Hindi)</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Custom Translation / Agent Notice -->
+          <div class="custom-api-status-row">
+            <span class="text-muted" id="activeTranslatorNotice">Using Built-in AI Translator (Whisper Large-v3 + Contextual LLM)</span>
+            <button type="button" class="btn-link" id="configureTranslatorLink">Connect Custom Translation API ➔</button>
+          </div>
+        </div>
+
+        <!-- Step 1 Action Button -->
+        <div class="action-footer">
+          <button id="generateBtn" class="btn btn-action" disabled>
+            <span class="btn-text">Generate Subtitles & Play</span>
+            <span class="btn-icon">⚡</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Processing State / Loader with Resizable Terminal -->
+      <section id="processingCard" class="card processing-card hidden">
+        <div class="processing-header">
+          <div class="spinner"></div>
+          <div>
+            <h3 id="processingTitle">Processing Video & Subtitles...</h3>
+            <p id="processingSubtitle">Transcribing dialogue and generating contextual translations</p>
+          </div>
+        </div>
+        
+        <div class="progress-bar-wrapper">
+          <div class="progress-bar-info">
+            <span id="progressStatusText">Extracting audio...</span>
+            <span id="progressPercentText" class="progress-percent">0%</span>
+          </div>
+          <div class="progress-bar-track">
+            <div id="mainProgressBar" class="progress-bar-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- Live Activity Log Terminal Console -->
+        <div class="activity-log-container" id="activityLogContainer">
+          <div class="activity-log-header">
+            <div class="log-title">
+              <span class="log-dot red"></span>
+              <span class="log-dot yellow"></span>
+              <span class="log-dot green"></span>
+              <span class="log-heading">Live Processing Console</span>
+              <span id="transcriptionBadge" class="terminal-badge hidden">0 segments</span>
+            </div>
+            <div class="log-actions">
+              <button type="button" class="btn-clear log-clear-btn" id="clearLogBtn" title="Clear console">Clear</button>
+            </div>
+          </div>
+          <div class="activity-log-body" id="activityLogBody">
+            <div class="log-entry system">[Ready] Initializing AI pipeline...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 2: Final Result Cinema Player & Interactive Subtitles -->
+      <section id="step2PlayerSection" class="player-layout hidden">
+        <!-- Video Cinema Column -->
+        <div class="player-column">
+          <div class="video-wrapper" id="videoWrapper">
+            <video id="mainVideoPlayer" controls playsinline preload="metadata"></video>
+            <!-- Custom On-Screen Subtitle Display -->
+            <div id="customSubtitleOverlay" class="custom-subtitle-overlay"></div>
+          </div>
+
+          <!-- Subtitle Navigation & Controls Bar -->
+          <div class="subtitle-controls-bar card">
+            <div class="sub-ctrl-group">
+              <label for="subLangSelect">Subtitle Track:</label>
+              <select id="subLangSelect" class="styled-select">
+                <option value="en">English</option>
+                <option value="hi">Hindi (हिन्दी)</option>
+                <option value="ja">Japanese (Original)</option>
+                <option value="bi_en">Bilingual (English + Japanese)</option>
+                <option value="bi_hi">Bilingual (Hindi + Japanese)</option>
+              </select>
+            </div>
+
+            <div class="sub-ctrl-group style-group">
+              <label for="subStyleSelect">Style:</label>
+              <select id="subStyleSelect" class="styled-select">
+                <option value="transparent" selected>✨ Transparent (Cinema)</option>
+                <option value="capsule">🏷️ Dark Capsule</option>
+                <option value="classic">⬛ Classic Box</option>
+                <option value="off">🚫 Off (Hidden)</option>
+              </select>
+            </div>
+
+            <div class="sub-ctrl-group offset-group">
+              <span class="ctrl-label">Time Sync:</span>
+              <button class="btn btn-sm btn-outline" id="offsetMinusBig" title="-0.5s">-0.5s</button>
+              <button class="btn btn-sm btn-outline" id="offsetMinusSmall" title="-0.1s">-0.1s</button>
+              <span id="offsetValue" class="offset-badge">0.0s</span>
+              <button class="btn btn-sm btn-outline" id="offsetPlusSmall" title="+0.1s">+0.1s</button>
+              <button class="btn btn-sm btn-outline" id="offsetPlusBig" title="+0.5s">+0.5s</button>
+            </div>
+
+            <div class="sub-ctrl-group downloads-group">
+              <a id="downloadSrtBtn" class="btn btn-sm btn-secondary" title="Download SubRip SRT" download="subtitles.srt" href="#">
+                📥 .SRT
+              </a>
+              <a id="downloadVttBtn" class="btn btn-sm btn-secondary" title="Download WebVTT" download="subtitles.vtt" href="#">
+                📥 .VTT
+              </a>
+              <button id="sendToTranslatorBtn" class="btn btn-sm btn-outline" title="Send transcript to custom translator/API">
+                🔄 Re-translate with Custom API
+              </button>
+              <button id="startOverBtn" class="btn btn-sm btn-ghost" title="Process another video">
+                🔄 New Video
+              </button>
+            </div>
+          </div>
+
+          <!-- Shortcuts Tip -->
+          <div class="shortcuts-tip">
+            <span>⌨️ <b>Space:</b> Play/Pause</span>
+            <span><b>←/→:</b> Seek ±5s</span>
+            <span><b>↑/↓:</b> Volume</span>
+            <span><b>F:</b> Fullscreen</span>
+            <span><b>C:</b> Toggle Subtitles</span>
+          </div>
+        </div>
+
+        <!-- Interactive Transcript Sidebar Column -->
+        <aside class="transcript-column card">
+          <div class="transcript-header">
+            <div class="transcript-title">
+              <h3>Interactive Transcript</h3>
+              <span id="segmentCountBadge" class="count-badge">0 segments</span>
+            </div>
+            <div class="search-wrapper">
+              <input type="text" id="transcriptSearch" placeholder="Search spoken text or sounds..." class="search-input">
+            </div>
+          </div>
+
+          <div class="transcript-scroll-wrapper">
+            <div class="transcript-scroll" id="transcriptList">
+              <div class="empty-state">No subtitles generated yet.</div>
+            </div>
+            <button id="resumeAutoScrollBtn" class="resume-scroll-pill hidden" title="Resume following video playback">
+              <span>▶</span> Resume Auto-Scroll
+            </button>
+          </div>
+        </aside>
+      </section>
+
+    </main>
+
+    <!-- Settings Modal (Keys & Custom Translation API / Agent) -->
+    <div id="settingsModal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>Settings & Custom Translation API</h3>
+          <button id="closeSettingsBtn" class="btn-clear">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="input-group">
+            <label for="groqApiKeyInput">Groq API Key (Whisper Large-v3 ASR & LLM)</label>
+            <input type="password" id="groqApiKeyInput" placeholder="gsk_..." class="styled-input">
+            <small class="help-text">Standard key for speech-to-text and default translation.</small>
+          </div>
+
+          <div class="input-group">
+            <label for="openRouterApiKeyInput">OpenRouter API Key (DeepSeek / Claude Fallback)</label>
+            <input type="password" id="openRouterApiKeyInput" placeholder="sk-or-v1-..." class="styled-input">
+            <small class="help-text">Optional fallback for heavy translation loads.</small>
+          </div>
+
+          <hr class="divider">
+
+          <h4 class="settings-subtitle">🌐 Custom Translation API / Agent Connection</h4>
+          <p class="help-text">Connect your own custom translator service, local LLM, or agent (OpenAI-compatible /chat/completions endpoint):</p>
+
+          <div class="input-group">
+            <label for="customEndpointInput">Custom Translation API URL (Optional)</label>
+            <input type="url" id="customEndpointInput" placeholder="https://your-api.com/v1/chat/completions" class="styled-input">
+            <small class="help-text">Leave blank to use the built-in translator by default.</small>
+          </div>
+
+          <div class="input-group">
+            <label for="customModelInput">Custom Model Name (Optional)</label>
+            <input type="text" id="customModelInput" placeholder="e.g. gpt-4o, claude-3-5-sonnet, deepseek-chat, or local-agent" class="styled-input">
+          </div>
+
+          <div id="settingsMessage" class="settings-msg hidden"></div>
+        </div>
+        <div class="modal-footer">
+          <button id="saveSettingsBtn" class="btn btn-primary">Save Settings</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Global Persistent Activity Log Modal -->
+    <div id="activityLogModal" class="modal-backdrop hidden">
+      <div class="modal-card log-modal-card">
+        <div class="modal-header">
+          <div class="modal-title-with-badge">
+            <h3>Backend Activity & Pipeline History</h3>
+            <span id="modalLogCount" class="badge-mini">0 entries</span>
+          </div>
+          <button id="closeLogModalBtn" class="btn-clear">✕</button>
+        </div>
+        <div class="modal-body log-modal-body">
+          <div class="activity-log-toolbar">
+            <span class="log-info-label">Full chronological record across all steps:</span>
+            <button type="button" class="btn btn-sm btn-outline" id="clearAllLogsBtn">Clear History</button>
+          </div>
+          <div class="global-log-history" id="globalLogHistory">
+            <div class="log-entry system"><span class="log-time">[System]</span> <span class="log-text">Session initialized. All pipeline actions will be recorded here.</span></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="closeLogModalFooterBtn" class="btn btn-primary">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
