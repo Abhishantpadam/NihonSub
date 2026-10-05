@@ -7,7 +7,12 @@
 
 ## 📸 Screenshots
 
-| Step 1: Upload Video & Choose Subtitle Target | Real-Time Transcription & Translation Console |
+### 🎬 Step 2: Synchronized Cinema Player & Interactive Transcript (Hinglish Subtitles & Dark Capsule Style)
+![NihonSub Cinema Player & Interactive Transcript](docs/assets/nihonsub_preview_player.png)
+
+<br>
+
+| Step 1: Upload Video & Select Language | Live Processing & Activity Console |
 | :---: | :---: |
 | ![NihonSub Step 1 Upload](docs/assets/nihonsub_preview_step1.png) | ![NihonSub Processing Console](docs/assets/nihonsub_preview_processing.png) |
 
