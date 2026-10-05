@@ -1,5 +1,5 @@
 {
-  "name": "japanese-video-subtitler",
+  "name": "nihonsub",
   "version": "1.0.0",
   "description": "Japanese audio extraction, vocalization-aware transcription, Hindi/English translation, and synchronized video subtitler",
   "main": "server.js",

@@ -1,4 +1,4 @@
-# 🎌 KoeSub (声サブ)
+# 🎌 NihonSub (日本サブ)
 
 > **Japanese Video AI Subtitler & Synchronized Cinema Player**  
 > Fast, vocalization-aware Japanese speech recognition powered by **Whisper Large-v3**, paired with contextual LLM translation (**English & Hindi**), silence-detection chunking for long media, and an interactive synchronized video player.
@@ -76,8 +76,8 @@
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/your-username/koesub.git
-cd koesub
+git clone https://github.com/your-username/nihonsub.git
+cd nihonsub
 ```
 
 ### 2. Install Dependencies

@@ -5,7 +5,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 cd "$DIR"
 
 echo "=========================================================="
-echo "🎌 KoeSub - Japanese Video Subtitler & Synchronized Player"
+echo "🎌 NihonSub - Japanese Video Subtitler & Synchronized Player"
 echo "=========================================================="
 
 if [ ! -d "node_modules" ]; then
@@ -13,5 +13,5 @@ if [ ! -d "node_modules" ]; then
     npm install
 fi
 
-echo "🚀 Starting KoeSub server on http://localhost:3000..."
+echo "🚀 Starting NihonSub server on http://localhost:3000..."
 node server.js

@@ -656,7 +656,7 @@ app.get('/api/stream/:jobId', (req, res) => {
 // Start Server
 app.listen(PORT, () => {
   console.log(`====================================================`);
-  console.log(`  🎌 Japanese Video Subtitler Server Running!`);
+  console.log(`  🎌 NihonSub (日本サブ) - Server Running!`);
   console.log(`  🌐 URL: http://localhost:${PORT}`);
   console.log(`  📁 Workspace: ${__dirname}`);
   console.log(`====================================================`);

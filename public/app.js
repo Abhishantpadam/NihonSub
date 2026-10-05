@@ -1,4 +1,4 @@
-// KoeSub - Japanese AI Video Subtitler & Synchronized Player
+// NihonSub - Japanese AI Video Subtitler & Synchronized Player
 // 2-Step Interactive Pipeline: Step 1 Upload & Language -> Processing -> Step 2 Cinema Player
 
 let selectedFile = null;
@@ -9,11 +9,11 @@ let activeSegmentIndex = -1;
 let timeOffset = 0.0;
 let autoScrollEnabled = true;
 let userScrollTimeout = null;
-let activeSubtitleStyle = localStorage.getItem('koesub_sub_style') || 'transparent';
+let activeSubtitleStyle = localStorage.getItem('nihonsub_sub_style') || localStorage.getItem('koesub_sub_style') || 'transparent';
 
 // Custom Translation API settings (stored in localStorage)
-let customTranslationEndpoint = localStorage.getItem('koesub_custom_endpoint') || '';
-let customTranslationModel = localStorage.getItem('koesub_custom_model') || '';
+let customTranslationEndpoint = localStorage.getItem('nihonsub_custom_endpoint') || localStorage.getItem('koesub_custom_endpoint') || '';
+let customTranslationModel = localStorage.getItem('nihonsub_custom_model') || localStorage.getItem('koesub_custom_model') || '';
 
 // Containers
 const step1Section = document.getElementById('step1Section');
@@ -200,7 +200,7 @@ function setupEventListeners() {
   // Subtitle Style Switcher
   subStyleSelect.addEventListener('change', (e) => {
     activeSubtitleStyle = e.target.value;
-    localStorage.setItem('koesub_sub_style', activeSubtitleStyle);
+    localStorage.setItem('nihonsub_sub_style', activeSubtitleStyle);
     updateSubtitleOverlayStyle();
   });
 
@@ -270,6 +270,8 @@ function setupEventListeners() {
     customTranslationEndpoint = customEndpointInput.value.trim();
     customTranslationModel = customModelInput.value.trim();
 
+    localStorage.setItem('nihonsub_custom_endpoint', customTranslationEndpoint);
+    localStorage.setItem('nihonsub_custom_model', customTranslationModel);
     localStorage.setItem('koesub_custom_endpoint', customTranslationEndpoint);
     localStorage.setItem('koesub_custom_model', customTranslationModel);
     updateCustomTranslatorUI();
