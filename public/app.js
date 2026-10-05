@@ -259,6 +259,18 @@ function setupEventListeners() {
   // Video Time Update for Synchronized Subtitles
   mainVideoPlayer.addEventListener('timeupdate', onVideoTimeUpdate);
 
+  // Sync track visibility on fullscreen changes to prevent duplicate subtitles
+  document.addEventListener('fullscreenchange', syncNativeTrackMode);
+  document.addEventListener('webkitfullscreenchange', syncNativeTrackMode);
+  mainVideoPlayer.addEventListener('webkitbeginfullscreen', () => {
+    if (mainVideoPlayer.textTracks && mainVideoPlayer.textTracks.length > 0) {
+      for (let i = 0; i < mainVideoPlayer.textTracks.length; i++) {
+        mainVideoPlayer.textTracks[i].mode = 'showing';
+      }
+    }
+  });
+  mainVideoPlayer.addEventListener('webkitendfullscreen', syncNativeTrackMode);
+
   // Activity Log Console Clear
   if (clearLogBtn) {
     clearLogBtn.addEventListener('click', () => {
@@ -552,7 +564,7 @@ function switchSubtitleLanguage(langKey) {
   downloadSrtBtn.setAttribute('download', `${currentPipelineData.jobId}_${langKey}.srt`);
   downloadVttBtn.setAttribute('download', `${currentPipelineData.jobId}_${langKey}.vtt`);
 
-  // Mount native WebVTT track for native fullscreen mode
+  // Mount native WebVTT track for native video fullscreen mode
   const existingTracks = mainVideoPlayer.querySelectorAll('track');
   existingTracks.forEach(t => t.remove());
 
@@ -562,20 +574,32 @@ function switchSubtitleLanguage(langKey) {
     trackEl.label = langKey.toUpperCase();
     trackEl.srclang = langKey.split('_')[0];
     trackEl.src = track.vttUrl;
-    trackEl.default = true;
     mainVideoPlayer.appendChild(trackEl);
 
-    // Ensure browser displays text track in native player/fullscreen
-    if (mainVideoPlayer.textTracks && mainVideoPlayer.textTracks.length > 0) {
-      for (let i = 0; i < mainVideoPlayer.textTracks.length; i++) {
-        mainVideoPlayer.textTracks[i].mode = 'showing';
-      }
-    }
+    // Keep native track HIDDEN in standard mode so customSubtitleOverlay handles rich styling without duplication
+    // We only enable native textTracks if document.fullscreenElement is the video itself
+    syncNativeTrackMode();
   }
 
   // Render Interactive Transcript
   renderTranscript(activeSegments);
   onVideoTimeUpdate();
+}
+
+function syncNativeTrackMode() {
+  const isNativeVideoFullscreen = document.fullscreenElement === mainVideoPlayer;
+  const isWrapperFullscreen = document.fullscreenElement && document.fullscreenElement.contains(customSubtitleOverlay);
+
+  // If the customSubtitleOverlay is visible and active on screen, disable native track to prevent double subtitles
+  if (mainVideoPlayer.textTracks && mainVideoPlayer.textTracks.length > 0) {
+    for (let i = 0; i < mainVideoPlayer.textTracks.length; i++) {
+      if (isNativeVideoFullscreen && !isWrapperFullscreen) {
+        mainVideoPlayer.textTracks[i].mode = 'showing';
+      } else {
+        mainVideoPlayer.textTracks[i].mode = 'disabled';
+      }
+    }
+  }
 }
 
 function updateSubtitleOverlayStyle() {
