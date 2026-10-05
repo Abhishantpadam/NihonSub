@@ -5,6 +5,14 @@
 
 ---
 
+## 📸 Screenshots
+
+| Step 1: Upload Video & Choose Subtitle Target | Real-Time Transcription & Translation Console |
+| :---: | :---: |
+| ![NihonSub Step 1 Upload](docs/assets/nihonsub_preview_step1.png) | ![NihonSub Processing Console](docs/assets/nihonsub_preview_processing.png) |
+
+---
+
 ## ✨ Features
 
 - 🎙️ **Acoustic Vocalization Capture**: Captures natural Japanese dialogue, non-verbal vocal markers, sighs, grunts, moans, and emotional nuances that standard transcription tools often strip out.
