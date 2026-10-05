@@ -1,5 +1,15 @@
 # 🎌 NihonSub (日本サブ)
 
+<p align="left">
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
+  <img src="https://img.shields.io/badge/Node.js-v18+-68a063.svg?logo=node.js&logoColor=white" alt="Node.js">
+  <img src="https://img.shields.io/badge/Whisper-Large--v3-f05032.svg?logo=openai&logoColor=white" alt="Whisper Large-v3">
+  <img src="https://img.shields.io/badge/Inference-Groq%20LPU-f55036.svg" alt="Groq LPU">
+  <img src="https://img.shields.io/badge/Fallback-OpenRouter%20%2F%20DeepSeek-7952b3.svg" alt="OpenRouter DeepSeek">
+  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
+  <img src="https://img.shields.io/github/stars/Abhishantpadam/nihonsub?style=social" alt="GitHub Stars">
+</p>
+
 > **Japanese Video AI Subtitler & Synchronized Cinema Player**  
 > Fast, vocalization-aware Japanese speech recognition powered by **Whisper Large-v3**, paired with contextual LLM translation (**English & Hindi**), silence-detection chunking for long media, and an interactive synchronized video player.
 
