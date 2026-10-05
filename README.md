@@ -7,14 +7,18 @@
 
 ## 📸 Screenshots
 
-### 🎬 Step 2: Synchronized Cinema Player & Interactive Transcript (Hinglish Subtitles & Dark Capsule Style)
-![NihonSub Cinema Player & Interactive Transcript](docs/assets/nihonsub_preview_player.png)
+### 1️⃣ Step 1: Upload Video & Select Language Options
+![NihonSub Step 1 Upload](docs/assets/nihonsub_preview_step1.png)
 
 <br>
 
-| Step 1: Upload Video & Select Language | Live Processing & Activity Console |
-| :---: | :---: |
-| ![NihonSub Step 1 Upload](docs/assets/nihonsub_preview_step1.png) | ![NihonSub Processing Console](docs/assets/nihonsub_preview_processing.png) |
+### ⚙️ Real-Time Transcription & Activity Console
+![NihonSub Processing Console](docs/assets/nihonsub_preview_processing.png)
+
+<br>
+
+### 2️⃣ Step 2: Synchronized Cinema Player & Interactive Transcript
+![NihonSub Cinema Player & Interactive Transcript](docs/assets/nihonsub_preview_player.png)
 
 ---
 
