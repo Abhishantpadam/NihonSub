@@ -31,6 +31,7 @@ const clearFileBtn = document.getElementById('clearFileBtn');
 const generateBtn = document.getElementById('generateBtn');
 const activeTranslatorNotice = document.getElementById('activeTranslatorNotice');
 const configureTranslatorLink = document.getElementById('configureTranslatorLink');
+const hindiScriptRow = document.getElementById('hindiScriptRow');
 
 // DOM Elements - Processing State
 const processingTitle = document.getElementById('processingTitle');
@@ -174,6 +175,18 @@ function setupEventListeners() {
   clearFileBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     resetFileSelection();
+  });
+
+  // Target Language Switcher (Reveal Devanagari vs Hinglish when Hindi or Both is picked)
+  document.querySelectorAll('input[name="targetLang"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      const val = e.target.value;
+      if (val === 'hi' || val === 'both') {
+        hindiScriptRow.classList.remove('hidden');
+      } else {
+        hindiScriptRow.classList.add('hidden');
+      }
+    });
   });
 
   // Primary Action Button: Generate Subtitles & Play
@@ -383,6 +396,14 @@ async function handleStartPipeline() {
   const formData = new FormData();
   formData.append('video', selectedFile);
   formData.append('targetLang', targetLang);
+
+  const hindiScript = (document.querySelector('input[name="hindiScript"]:checked') || {}).value || 'devanagari';
+  formData.append('hindiScript', hindiScript);
+
+  if (targetLang === 'hi' || targetLang === 'both') {
+    appendActivityLog(`Hindi script style: ${hindiScript === 'hinglish' ? 'Hinglish (Roman Script)' : 'Devanagari (देवनागरी)'}`, 'system');
+  }
+
   if (customTranslationEndpoint) {
     formData.append('customTranslationEndpoint', customTranslationEndpoint);
     formData.append('customTranslationModel', customTranslationModel);
@@ -495,10 +516,14 @@ function populateSubtitleSelect(targetLang) {
     }
   };
 
+  const hindiLabel = (activeSubtitlesData && activeSubtitlesData.hi && activeSubtitlesData.hi.script === 'hinglish')
+    ? '🇮🇳 Hindi (Hinglish / Roman Script)'
+    : '🇮🇳 Hindi (हिन्दी / देवनागरी)';
+
   addOption('en', '🇬🇧 English (Translated)');
-  addOption('hi', '🇮🇳 Hindi (हिन्दी)');
+  addOption('hi', hindiLabel);
   addOption('bi_en', '🌐 Bilingual (English + Japanese)');
-  addOption('bi_hi', '🌐 Bilingual (Hindi + Japanese)');
+  addOption('bi_hi', `🌐 Bilingual (${activeSubtitlesData?.hi?.script === 'hinglish' ? 'Hinglish' : 'Hindi'} + Japanese)`);
   addOption('ja', '🇯🇵 Japanese (Original Dialogue)');
 }
 

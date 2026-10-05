@@ -11,8 +11,10 @@
 - ✂️ **Lossless Silence-Detection Chunking**: Automatically analyzes waveforms with FFmpeg for natural pause intervals (`-30dB`, `d >= 0.5s`) for audio files longer than 10 minutes, preventing rate-limit issues and preserving sentence flow without mid-word cuts.
 - 🌐 **Expressive Contextual Translation**:
   - **English**: Conversational dialogue with preserved emotion and subtitle action tags.
-  - **Hindi (हिन्दी)**: Culturally natural Devanagari subtitles with emotional markers.
-  - **Bilingual Tracks**: Dual Japanese + English / Hindi display for language learners.
+  - **Hindi (हिन्दी / Hinglish)**: 
+    - **Devanagari (देवनागरी)**: Standard native Hindi script (e.g. *"नमस्ते, आप कैसे हैं?"*).
+    - **Hinglish (Roman Script)**: Casual Roman alphabet conversational texting style (e.g. *"Namaste, aap kaise hain?"*).
+  - **Bilingual Tracks**: Dual Japanese + English / Hindi / Hinglish display for language learners.
 - ⚡ **Automatic Rate Limit Fallback**:
   - If Groq encounters an HTTP 429 rate limit during heavy batch translation, the engine automatically routes translation to **OpenRouter (DeepSeek)** or backs off gracefully.
 - 🔌 **Custom Translation API / Agent Support**: Connect your own OpenAI-compatible `/chat/completions` endpoint (local Ollama, vLLM, custom agents, or proprietary LLMs) directly from the in-app UI.

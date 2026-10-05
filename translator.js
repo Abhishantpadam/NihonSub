@@ -15,12 +15,15 @@ const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
  * @param {Function} [onProgress] - Callback for real-time progress updates
  * @returns {Promise<Array<{ id: number, start: number, end: number, text: string }>>}
  */
-export async function translateSegments(segments, targetLang, apiKey, openRouterKey, onProgress, customEndpoint, customModel) {
+export async function translateSegments(segments, targetLang, apiKey, openRouterKey, onProgress, customEndpoint, customModel, scriptOption = 'devanagari') {
   if (!segments || segments.length === 0) {
     return [];
   }
 
-  const langName = targetLang === 'hi' ? 'Hindi (हिन्दी)' : 'English';
+  const isHinglish = targetLang === 'hi' && scriptOption === 'hinglish';
+  const langName = targetLang === 'hi'
+    ? (isHinglish ? 'Hinglish (Hindi in conversational Roman alphabet script, e.g. "Kya kar rahe ho?", "Sach mein?")' : 'Hindi (हिन्दी in standard Devanagari script)')
+    : 'English';
   const BATCH_SIZE = 25; // Balanced batch size for prompt quality & rate limits
   const totalBatches = Math.ceil(segments.length / BATCH_SIZE);
   const results = [];
@@ -48,7 +51,8 @@ export async function translateSegments(segments, targetLang, apiKey, openRouter
       openRouterKey,
       onProgress,
       customEndpoint,
-      customModel
+      customModel,
+      scriptOption
     );
 
     results.push(...translatedChunk);
@@ -73,30 +77,66 @@ export async function translateSegments(segments, targetLang, apiKey, openRouter
  * 1. Checks if OpenRouter or Custom API is available for instant translation.
  * 2. Or parses wait time from Groq's error, sleeps, and retries.
  */
-async function translateBatchWithFallback(batch, langName, targetLangCode, groqKey, openRouterKey, onProgress, customEndpoint, customModel) {
+async function translateBatchWithFallback(batch, langName, targetLangCode, groqKey, openRouterKey, onProgress, customEndpoint, customModel, scriptOption = 'devanagari') {
   const isHindi = targetLangCode === 'hi';
+  const isHinglish = isHindi && scriptOption === 'hinglish';
+
+  let scriptInstruction = '';
+  if (isHindi) {
+    if (isHinglish) {
+      scriptInstruction = `
+SCRIPT REQUIREMENT: MANDATORY HINGLISH (ROMAN ALPHABET).
+Write modern, conversational everyday Hindi using the English Roman alphabet (casual texting style).
+DO NOT use Devanagari characters (like क, ख, ग).
+Examples:
+* "Mujhe yeh bahut pasand hai!" (Not: "मुझे यह बहुत पसंद है!")
+* "Arre, tum yahan kya kar rahe ho?"
+* "Sach mein? Yakeen nahi hota!"
+* "Kripya meri madad karo."`;
+    } else {
+      scriptInstruction = `
+SCRIPT REQUIREMENT: MANDATORY STANDARD DEVANAGARI (देवनागरी).
+Write in clear, standard Hindi written exclusively in the Devanagari script.
+Examples:
+* "मुझे यह बहुत पसंद है!"
+* "अरे, तुम यहाँ क्या कर रहे हो?"
+* "सच में? यकीन नहीं होता!"`;
+    }
+  }
+
+  let vocalizationExamples = '';
+  if (isHindi) {
+    if (isHinglish) {
+      vocalizationExamples = `* For grunts / strain: "*grunts*", "*karah*", "*karahate hue*", "*uff*"
+   * For moans / pleasure / sighs: "*moans*", "*siskari*", "*aah...*", "*sighs*", "*madhosh aawaaz*"
+   * For panting / breath: "*hanfte hue*", "*heavy breathing*", "*tez saansein*"
+   * For humming / thinking: "*hmm...*", "*gungunate hue*"
+   * For sudden surprises / gasps: "*gasps*", "*arre!*", "*oh!*"`;
+    } else {
+      vocalizationExamples = `* For grunts / strain: "*कराह*", "*कराहते हुए*", "*उफ़्फ़*"
+   * For moans / pleasure / sighs: "*सिसकारी*", "*आह...*", "*गहरी सांस*", "*मदहोश आवाज*"
+   * For panting / breath: "*हांफते हुए*", "*तेज सांसें*"
+   * For humming / thinking: "*हम्म...*", "*गुनगुनाते हुए*"
+   * For sudden surprises / gasps: "*सांस रुकते हुए*", "*अरे!*", "*ओह!*"`;
+    }
+  } else {
+    vocalizationExamples = `* For grunts / strain: "*grunts*", "*groans*", "*ugh*"
+   * For moans / pleasure / sighs: "*moans*", "*ah...*", "*sighs*", "*whimpers*"
+   * For panting / breath: "*pant*", "*heavy breathing*", "*huff*"
+   * For humming / thinking: "*humming*", "*hmm...*"
+   * For sudden surprises / gasps: "*gasps*", "*cries out*"`;
+  }
 
   const systemPrompt = `You are a master subtitle translator specializing in Japanese to ${langName}.
 You translate Japanese dialogue and audio with extreme precision, natural conversational flow, and complete emotional fidelity.
+${scriptInstruction}
 
 CRITICAL INSTRUCTIONS:
 1. Context & Implicit Subjects: Japanese regularly drops subjects (I, you, he, she). Infer the correct context and natural conversational phrasing.
 2. VOCALIZATIONS & SOUND EFFECTS (MANDATORY):
    Do NOT delete, ignore, or censor non-verbal sounds, grunts, sighing, humming, moaning, breathing, gasps, or pleasing sounds.
    Translate them faithfully into expressive subtitle sound markers:
-   ${
-     isHindi
-       ? `* For grunts / strain: "*कराह*", "*कराहते हुए*", "*उफ़्फ़*"
-   * For moans / pleasure / sighs: "*सिसकारी*", "*आह...*", "*गहरी सांस*", "*मदहोश आवाज*"
-   * For panting / breath: "*हांफते हुए*", "*तेज सांसें*"
-   * For humming / thinking: "*हम्म...*", "*गुनगुनाते हुए*"
-   * For sudden surprises / gasps: "*सांस रुकते हुए*", "*अरे!*", "*ओह!*"`
-       : `* For grunts / strain: "*grunts*", "*groans*", "*ugh*"
-   * For moans / pleasure / sighs: "*moans*", "*ah...*", "*sighs*", "*whimpers*"
-   * For panting / breath: "*pant*", "*heavy breathing*", "*huff*"
-   * For humming / thinking: "*humming*", "*hmm...*"
-   * For sudden surprises / gasps: "*gasps*", "*cries out*"`
-   }
+   ${vocalizationExamples}
 3. OUTPUT FORMAT:
    Return ONLY a valid JSON array of objects with the exact same 'id', 'start', 'end', and the translated 'text'.
    Example JSON:

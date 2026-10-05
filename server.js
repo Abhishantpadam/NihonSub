@@ -510,13 +510,16 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
       };
     }
 
-    // Hindi Translation
+    // Hindi Translation (Devanagari vs Hinglish)
+    const hindiScript = req.body.hindiScript === 'hinglish' ? 'hinglish' : 'devanagari';
+
     if (targetLang === 'hi' || targetLang === 'both') {
+      const scriptLabel = hindiScript === 'hinglish' ? 'Hinglish (Roman Script)' : 'Hindi (हिन्दी / देवनागरी)';
       sendEvent({
         type: 'progress',
         step: 'translate',
         percent: 70,
-        message: 'Translating to Hindi (हिन्दी) with expressive vocal markers...'
+        message: `Translating to ${scriptLabel} with expressive vocal markers...`
       });
 
       const hiSegments = await translateSegments(
@@ -529,11 +532,12 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
             type: 'progress',
             step: 'translate',
             percent: Math.min(92, 70 + Math.round((prog.completedSegments / prog.totalSegments) * 22)),
-            message: `[Hindi] ${prog.status}`
+            message: `[${hindiScript === 'hinglish' ? 'Hinglish' : 'Hindi'}] ${prog.status}`
           });
         },
         customEndpoint,
-        customModel
+        customModel,
+        hindiScript
       );
 
       const hiSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'hi', hiSegments);
@@ -541,7 +545,8 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
         vttUrl: `/api/subtitles/${jobId}/hi/vtt`,
         srtUrl: `/api/subtitles/${jobId}/hi/srt`,
         segments: hiSegments,
-        vttContent: hiSubs.vttContent
+        vttContent: hiSubs.vttContent,
+        script: hindiScript
       };
 
       // Bilingual Hindi + Japanese
@@ -551,7 +556,8 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
         vttUrl: `/api/subtitles/${jobId}/bi_hi/vtt`,
         srtUrl: `/api/subtitles/${jobId}/bi_hi/srt`,
         segments: biHiSegments,
-        vttContent: biHiSubs.vttContent
+        vttContent: biHiSubs.vttContent,
+        script: hindiScript
       };
     }
 
