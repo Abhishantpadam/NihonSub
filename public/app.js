@@ -104,16 +104,20 @@ async function checkConfig() {
   try {
     const res = await fetch('/api/config');
     const data = await res.json();
-    if (data.groqConfigured) {
-      apiKeyStatus.className = 'status-chip ready';
-      apiKeyStatus.querySelector('.text').textContent = `Groq: ${data.maskedKey}`;
-    } else {
-      apiKeyStatus.className = 'status-chip missing';
-      apiKeyStatus.querySelector('.text').textContent = 'Groq Key Missing';
+    if (apiKeyStatus) {
+      if (data.groqConfigured) {
+        apiKeyStatus.className = 'status-chip ready';
+        apiKeyStatus.querySelector('.text').textContent = `Groq: ${data.maskedKey}`;
+      } else {
+        apiKeyStatus.className = 'status-chip missing';
+        apiKeyStatus.querySelector('.text').textContent = 'Groq Key Missing';
+      }
     }
   } catch {
-    apiKeyStatus.className = 'status-chip missing';
-    apiKeyStatus.querySelector('.text').textContent = 'Server Offline';
+    if (apiKeyStatus) {
+      apiKeyStatus.className = 'status-chip missing';
+      apiKeyStatus.querySelector('.text').textContent = 'Server Offline';
+    }
   }
 }
 
