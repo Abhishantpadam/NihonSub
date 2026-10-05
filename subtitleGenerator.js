@@ -96,3 +96,60 @@ export async function saveSubtitles(outputDir, jobId, lang, segments) {
 
   return { vttPath, srtPath, vttContent, srtContent };
 }
+
+/**
+ * Parses a WebVTT formatted string into an array of subtitle segments
+ */
+export function parseVttToSegments(vttContent) {
+  const lines = vttContent.split(/\r?\n/);
+  const segments = [];
+  let pendingId = 0;
+  let currentId = 0;
+  let currentStart = null;
+  let currentEnd = null;
+  let currentTextLines = [];
+
+  const timeToSec = (tStr) => {
+    const parts = tStr.trim().split(':');
+    if (parts.length === 3) {
+      return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+    }
+    return 0;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line === 'WEBVTT') continue;
+
+    const timeMatch = line.match(/^(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})/);
+    if (timeMatch) {
+      if (currentStart !== null && currentTextLines.length > 0) {
+        segments.push({
+          id: currentId,
+          start: currentStart,
+          end: currentEnd,
+          text: currentTextLines.join('\n').trim()
+        });
+      }
+      currentId = pendingId;
+      currentStart = timeToSec(timeMatch[1]);
+      currentEnd = timeToSec(timeMatch[2]);
+      currentTextLines = [];
+    } else if (/^\d+$/.test(line) && lines[i + 1] && lines[i + 1].includes('-->')) {
+      pendingId = parseInt(line, 10);
+    } else if (currentStart !== null) {
+      currentTextLines.push(line);
+    }
+  }
+
+  if (currentStart !== null && currentTextLines.length > 0) {
+    segments.push({
+      id: currentId,
+      start: currentStart,
+      end: currentEnd,
+      text: currentTextLines.join('\n').trim()
+    });
+  }
+
+  return segments;
+}

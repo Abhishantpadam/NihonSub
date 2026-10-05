@@ -1491,3 +1491,30 @@ video::cue {
   border: 1px solid rgba(16, 185, 129, 0.4);
   font-family: var(--font-mono);
 }
+
+.preset-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.btn-chip {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-chip:hover {
+  background: var(--bg-surface-elevated);
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+

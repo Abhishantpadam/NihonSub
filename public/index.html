@@ -266,20 +266,35 @@
           <h4 class="settings-subtitle">🌐 Custom Translation API / Agent Connection</h4>
           <p class="help-text">Connect your own custom translator service, local LLM, or agent (OpenAI-compatible /chat/completions endpoint):</p>
 
-          <div class="input-group">
-            <label for="customEndpointInput">Custom Translation API URL (Optional)</label>
-            <input type="url" id="customEndpointInput" placeholder="https://your-api.com/v1/chat/completions" class="styled-input">
-            <small class="help-text">Leave blank to use the built-in translator by default.</small>
+          <div class="preset-chips">
+            <span style="font-size:0.8rem; color:var(--text-muted);">Quick Presets:</span>
+            <button type="button" class="btn-chip" id="presetTopToolsBtn">⚡ top-tools-ai.com</button>
+            <button type="button" class="btn-chip" id="presetLocalOllamaBtn">🦙 Local Ollama</button>
+            <button type="button" class="btn-chip" id="presetClearCustomBtn">✖ Clear</button>
           </div>
 
           <div class="input-group">
-            <label for="customModelInput">Custom Model Name (Optional)</label>
-            <input type="text" id="customModelInput" placeholder="e.g. gpt-4o, claude-3-5-sonnet, deepseek-chat, or local-agent" class="styled-input">
+            <label for="customApiKeyInput">Custom API Key</label>
+            <input type="password" id="customApiKeyInput" placeholder="sk-... (Required for top-tools-ai.com)" class="styled-input">
+            <small class="help-text">Your API key for top-tools-ai.com or custom provider.</small>
+          </div>
+
+          <div class="input-group">
+            <label for="customEndpointInput">Custom Translation API URL (Base or /chat/completions)</label>
+            <input type="url" id="customEndpointInput" placeholder="https://top-tools-ai.com/api/v1" class="styled-input">
+            <small class="help-text">e.g. https://top-tools-ai.com/api/v1 (Leave blank to use default Groq translator)</small>
+          </div>
+
+          <div class="input-group">
+            <label for="customModelInput">Custom Model Name</label>
+            <input type="text" id="customModelInput" placeholder="Top-Tools-Ai, DeepSeek-V4-Pro, GLM-5.3, etc." class="styled-input">
+            <small class="help-text">For top-tools-ai.com: Top-Tools-Ai, DeepSeek-V4-Pro, GLM-5.3, or Qwen-3.8-Max</small>
           </div>
 
           <div id="settingsMessage" class="settings-msg hidden"></div>
         </div>
         <div class="modal-footer">
+          <button type="button" id="testCustomApiBtn" class="btn btn-secondary">🧪 Test Connection</button>
           <button id="saveSettingsBtn" class="btn btn-primary">Save Settings</button>
         </div>
       </div>

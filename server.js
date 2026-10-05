@@ -11,8 +11,8 @@ import { fileURLToPath } from 'url';
 
 import { extractOriginalAudio, prepareTranscriptionAudio, getAudioMetadata, splitAudioAtSilence } from './audioExtractor.js';
 import { transcribeAudio, transcribeAudioChunks } from './transcriber.js';
-import { translateSegments } from './translator.js';
-import { saveSubtitles, generateBilingualSegments } from './subtitleGenerator.js';
+import { translateSegments, testCustomApiConnection } from './translator.js';
+import { saveSubtitles, generateBilingualSegments, parseVttToSegments } from './subtitleGenerator.js';
 
 dotenv.config();
 
@@ -58,17 +58,27 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('/api/config', (req, res) => {
   const groqKey = process.env.GROQ_API_KEY || '';
   const orKey = process.env.OPENROUTER_API_KEY || '';
+  const customKey = process.env.CUSTOM_TRANSLATION_API_KEY || '';
   const isGroqConfigured = groqKey.length > 10;
   const isOrConfigured = orKey.length > 10;
+  const isCustomConfigured = customKey.length > 5;
 
   const maskedGroq = isGroqConfigured
     ? `${groqKey.substring(0, 6)}...${groqKey.substring(groqKey.length - 4)}`
     : 'Not configured';
 
+  const maskedCustom = isCustomConfigured
+    ? `${customKey.substring(0, 5)}...${customKey.substring(customKey.length - 4)}`
+    : 'Not configured';
+
   res.json({
     groqConfigured: isGroqConfigured,
     openRouterConfigured: isOrConfigured,
-    maskedKey: maskedGroq
+    customConfigured: isCustomConfigured,
+    maskedKey: maskedGroq,
+    maskedCustomKey: maskedCustom,
+    customEndpoint: process.env.CUSTOM_TRANSLATION_ENDPOINT || '',
+    customModel: process.env.CUSTOM_TRANSLATION_MODEL || ''
   });
 });
 
@@ -76,14 +86,145 @@ app.get('/api/config', (req, res) => {
  * POST /api/config: Update API keys dynamically
  */
 app.post('/api/config', (req, res) => {
-  const { groqApiKey, openRouterApiKey } = req.body;
+  const { groqApiKey, openRouterApiKey, customApiKey, customEndpoint, customModel } = req.body;
   if (groqApiKey && groqApiKey.trim().length > 10) {
     process.env.GROQ_API_KEY = groqApiKey.trim();
   }
   if (openRouterApiKey && openRouterApiKey.trim().length > 10) {
     process.env.OPENROUTER_API_KEY = openRouterApiKey.trim();
   }
+  if (customApiKey && customApiKey.trim().length > 3) {
+    process.env.CUSTOM_TRANSLATION_API_KEY = customApiKey.trim();
+  }
+  if (customEndpoint && customEndpoint.trim()) {
+    process.env.CUSTOM_TRANSLATION_ENDPOINT = customEndpoint.trim();
+  }
+  if (customModel && customModel.trim()) {
+    process.env.CUSTOM_TRANSLATION_MODEL = customModel.trim();
+  }
   return res.json({ success: true, message: 'Settings updated successfully.' });
+});
+
+/**
+ * POST /api/test-custom-api: Test connection to custom OpenAI-compatible API (e.g. top-tools-ai.com)
+ */
+app.post('/api/test-custom-api', async (req, res) => {
+  const { endpoint, model, apiKey } = req.body;
+  const effectiveEndpoint = endpoint || process.env.CUSTOM_TRANSLATION_ENDPOINT || 'https://top-tools-ai.com/api/v1';
+  const effectiveModel = model || process.env.CUSTOM_TRANSLATION_MODEL || 'Top-Tools-Ai';
+  const effectiveKey = apiKey || process.env.CUSTOM_TRANSLATION_API_KEY || '';
+
+  if (!effectiveKey) {
+    return res.status(400).json({ error: 'Please provide an API key to test.' });
+  }
+
+  try {
+    const result = await testCustomApiConnection(effectiveEndpoint, effectiveModel, effectiveKey);
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Custom API test failed.' });
+  }
+});
+
+/**
+ * POST /api/retranslate: Fast re-translation of existing subtitles using Custom API (e.g. top-tools-ai.com)
+ */
+app.post('/api/retranslate', async (req, res) => {
+  const { jobId, targetLang, hindiScript, customEndpoint, customModel, customApiKey } = req.body;
+  if (!jobId) {
+    return res.status(400).json({ error: 'Job ID is required.' });
+  }
+
+  const jaVttPath = path.join(SUBTITLES_DIR, `${jobId}_ja.vtt`);
+  if (!fs.existsSync(jaVttPath)) {
+    return res.status(404).json({ error: 'Original Japanese subtitles not found for this job.' });
+  }
+
+  try {
+    const jaVtt = fs.readFileSync(jaVttPath, 'utf-8');
+    const jaSegments = parseVttToSegments(jaVtt);
+    if (!jaSegments || jaSegments.length === 0) {
+      return res.status(400).json({ error: 'No segments found in Japanese subtitles.' });
+    }
+
+    const groqKey = process.env.GROQ_API_KEY;
+    const openRouterKey = process.env.OPENROUTER_API_KEY || '';
+    const chosenLang = targetLang || 'en';
+    const effectiveEndpoint = customEndpoint || process.env.CUSTOM_TRANSLATION_ENDPOINT;
+    const effectiveModel = customModel || process.env.CUSTOM_TRANSLATION_MODEL || 'Top-Tools-Ai';
+    const effectiveCustomKey = customApiKey || process.env.CUSTOM_TRANSLATION_API_KEY;
+    const resultSubtitles = {};
+
+    if (chosenLang === 'en' || chosenLang === 'both') {
+      const enSegments = await translateSegments(
+        jaSegments,
+        'en',
+        groqKey,
+        openRouterKey,
+        null,
+        effectiveEndpoint,
+        effectiveModel,
+        'devanagari',
+        effectiveCustomKey
+      );
+      const enSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'en', enSegments);
+      resultSubtitles.en = {
+        vttUrl: `/api/subtitles/${jobId}/en/vtt?t=${Date.now()}`,
+        srtUrl: `/api/subtitles/${jobId}/en/srt?t=${Date.now()}`,
+        segments: enSegments,
+        vttContent: enSubs.vttContent
+      };
+      const biEnSegments = generateBilingualSegments(jaSegments, enSegments);
+      const biEnSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'bi_en', biEnSegments);
+      resultSubtitles.bi_en = {
+        vttUrl: `/api/subtitles/${jobId}/bi_en/vtt?t=${Date.now()}`,
+        srtUrl: `/api/subtitles/${jobId}/bi_en/srt?t=${Date.now()}`,
+        segments: biEnSegments,
+        vttContent: biEnSubs.vttContent
+      };
+    }
+
+    if (chosenLang === 'hi' || chosenLang === 'both') {
+      const script = hindiScript === 'hinglish' ? 'hinglish' : 'devanagari';
+      const hiSegments = await translateSegments(
+        jaSegments,
+        'hi',
+        groqKey,
+        openRouterKey,
+        null,
+        effectiveEndpoint,
+        effectiveModel,
+        script,
+        effectiveCustomKey
+      );
+      const hiSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'hi', hiSegments);
+      resultSubtitles.hi = {
+        vttUrl: `/api/subtitles/${jobId}/hi/vtt?t=${Date.now()}`,
+        srtUrl: `/api/subtitles/${jobId}/hi/srt?t=${Date.now()}`,
+        segments: hiSegments,
+        vttContent: hiSubs.vttContent,
+        script
+      };
+      const biHiSegments = generateBilingualSegments(jaSegments, hiSegments);
+      const biHiSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'bi_hi', biHiSegments);
+      resultSubtitles.bi_hi = {
+        vttUrl: `/api/subtitles/${jobId}/bi_hi/vtt?t=${Date.now()}`,
+        srtUrl: `/api/subtitles/${jobId}/bi_hi/srt?t=${Date.now()}`,
+        segments: biHiSegments,
+        vttContent: biHiSubs.vttContent,
+        script
+      };
+    }
+
+    return res.json({
+      success: true,
+      jobId,
+      subtitles: resultSubtitles
+    });
+  } catch (err) {
+    console.error('[Retranslate Error]:', err);
+    return res.status(500).json({ error: err.message || 'Re-translation failed.' });
+  }
 });
 
 /**
@@ -345,8 +486,9 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
     return res.end();
   }
 
-  const groqKey = (req.body.customApiKey && req.body.customApiKey.trim()) || process.env.GROQ_API_KEY;
+  const groqKey = (req.body.customGroqKey && req.body.customGroqKey.trim()) || (req.body.customApiKey && req.body.customApiKey.trim()) || process.env.GROQ_API_KEY;
   const openRouterKey = process.env.OPENROUTER_API_KEY || '';
+  const customTranslationApiKey = (req.body.customTranslationApiKey && req.body.customTranslationApiKey.trim()) || process.env.CUSTOM_TRANSLATION_API_KEY || '';
 
   if (!groqKey) {
     sendEvent({
@@ -455,8 +597,8 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
     };
 
     // 3. Translation
-    const customEndpoint = req.body.customTranslationEndpoint || '';
-    const customModel = req.body.customTranslationModel || '';
+    const customEndpoint = req.body.customTranslationEndpoint || process.env.CUSTOM_TRANSLATION_ENDPOINT || '';
+    const customModel = req.body.customTranslationModel || process.env.CUSTOM_TRANSLATION_MODEL || '';
 
     sendEvent({
       type: 'progress',
@@ -488,7 +630,9 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
           });
         },
         customEndpoint,
-        customModel
+        customModel,
+        'devanagari',
+        customTranslationApiKey
       );
 
       const enSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'en', enSegments);
@@ -537,7 +681,8 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
         },
         customEndpoint,
         customModel,
-        hindiScript
+        hindiScript,
+        customTranslationApiKey
       );
 
       const hiSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'hi', hiSegments);

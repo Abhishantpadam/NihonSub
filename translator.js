@@ -15,7 +15,17 @@ const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
  * @param {Function} [onProgress] - Callback for real-time progress updates
  * @returns {Promise<Array<{ id: number, start: number, end: number, text: string }>>}
  */
-export async function translateSegments(segments, targetLang, apiKey, openRouterKey, onProgress, customEndpoint, customModel, scriptOption = 'devanagari') {
+export async function translateSegments(
+  segments,
+  targetLang,
+  apiKey,
+  openRouterKey,
+  onProgress,
+  customEndpoint,
+  customModel,
+  scriptOption = 'devanagari',
+  customApiKey = null
+) {
   if (!segments || segments.length === 0) {
     return [];
   }
@@ -52,7 +62,8 @@ export async function translateSegments(segments, targetLang, apiKey, openRouter
       onProgress,
       customEndpoint,
       customModel,
-      scriptOption
+      scriptOption,
+      customApiKey
     );
 
     results.push(...translatedChunk);
@@ -77,7 +88,18 @@ export async function translateSegments(segments, targetLang, apiKey, openRouter
  * 1. Checks if OpenRouter or Custom API is available for instant translation.
  * 2. Or parses wait time from Groq's error, sleeps, and retries.
  */
-async function translateBatchWithFallback(batch, langName, targetLangCode, groqKey, openRouterKey, onProgress, customEndpoint, customModel, scriptOption = 'devanagari') {
+async function translateBatchWithFallback(
+  batch,
+  langName,
+  targetLangCode,
+  groqKey,
+  openRouterKey,
+  onProgress,
+  customEndpoint,
+  customModel,
+  scriptOption = 'devanagari',
+  customApiKey = null
+) {
   const isHindi = targetLangCode === 'hi';
   const isHinglish = isHindi && scriptOption === 'hinglish';
 
@@ -152,15 +174,28 @@ Do NOT enclose the output in markdown codeblocks or add any extra conversational
   // If user provided a Custom Translation API / Agent endpoint (OpenAI compatible)
   if (customEndpoint && customEndpoint.trim().startsWith('http')) {
     try {
-      if (onProgress) onProgress({ status: `Routing batch to Custom Translation API (${customEndpoint})...` });
-      const customResponse = await fetch(customEndpoint.trim(), {
+      let endpointUrl = customEndpoint.trim();
+      // Auto-append /chat/completions if base URL is provided
+      if (!endpointUrl.endsWith('/chat/completions')) {
+        endpointUrl = endpointUrl.replace(/\/+$/, '') + '/chat/completions';
+      }
+
+      const modelToUse = (customModel && customModel.trim()) ? customModel.trim() : 'Top-Tools-Ai';
+      const effectiveKey = (customApiKey && customApiKey.trim())
+        || process.env.CUSTOM_TRANSLATION_API_KEY
+        || openRouterKey
+        || groqKey;
+
+      if (onProgress) onProgress({ status: `Routing batch to Custom API (${modelToUse} @ ${endpointUrl})...` });
+      
+      const customResponse = await fetch(endpointUrl, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${openRouterKey || groqKey || 'custom'}`,
+          Authorization: `Bearer ${effectiveKey}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: customModel || 'default',
+          model: modelToUse,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt }
@@ -172,7 +207,14 @@ Do NOT enclose the output in markdown codeblocks or add any extra conversational
       if (customResponse.ok) {
         const cData = await customResponse.json();
         const content = cData.choices?.[0]?.message?.content || cData.text;
-        return parseTranslatedContent(content, batch);
+        const parsed = parseTranslatedContent(content, batch);
+        if (parsed && parsed.length > 0) {
+          return parsed;
+        }
+      } else {
+        const errText = await customResponse.text().catch(() => '');
+        console.warn(`[Custom API Error ${customResponse.status}]: ${errText}`);
+        if (onProgress) onProgress({ status: `Custom API returned status ${customResponse.status}. Falling back to default engine...` });
       }
     } catch (cErr) {
       console.warn(`[Custom API Failed]: ${cErr.message}. Falling back to default engine...`);
@@ -296,6 +338,11 @@ async function translateViaOpenRouter(batch, systemPrompt, userPrompt, openRoute
 function parseTranslatedContent(rawContent, batch) {
   let content = (rawContent || '[]').trim();
 
+  // Strip thinking / reasoning tags (e.g. DeepSeek R1 <think>...</think>)
+  if (content.includes('</think>')) {
+    content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  }
+
   // Strip markdown fences
   if (content.startsWith('```')) {
     content = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
@@ -330,3 +377,46 @@ function parseTranslatedContent(rawContent, batch) {
 
   return batch;
 }
+
+/**
+ * Tests connection to a custom OpenAI-compatible endpoint (like top-tools-ai.com)
+ */
+export async function testCustomApiConnection(endpoint, model, apiKey) {
+  if (!endpoint || !endpoint.startsWith('http')) {
+    throw new Error('Please enter a valid HTTP/HTTPS endpoint URL.');
+  }
+
+  let endpointUrl = endpoint.trim();
+  if (!endpointUrl.endsWith('/chat/completions')) {
+    endpointUrl = endpointUrl.replace(/\/+$/, '') + '/chat/completions';
+  }
+
+  const modelToUse = (model && model.trim()) ? model.trim() : 'Top-Tools-Ai';
+  const effectiveKey = (apiKey && apiKey.trim()) || process.env.CUSTOM_TRANSLATION_API_KEY || '';
+
+  const response = await fetch(endpointUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${effectiveKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: modelToUse,
+      messages: [
+        { role: 'system', content: 'You are a Japanese to English translator. Return only the translated English text.' },
+        { role: 'user', content: 'こんにちは、世界！' }
+      ],
+      temperature: 0.2
+    })
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    throw new Error(`API error (${response.status}): ${errText}`);
+  }
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content || data.text || 'Success';
+  return { success: true, model: modelToUse, reply: text.trim() };
+}
+

@@ -12,6 +12,7 @@ let userScrollTimeout = null;
 let activeSubtitleStyle = localStorage.getItem('nihonsub_sub_style') || localStorage.getItem('koesub_sub_style') || 'transparent';
 
 // Custom Translation API settings (stored in localStorage)
+let customTranslationApiKey = localStorage.getItem('nihonsub_custom_api_key') || localStorage.getItem('koesub_custom_api_key') || '';
 let customTranslationEndpoint = localStorage.getItem('nihonsub_custom_endpoint') || localStorage.getItem('koesub_custom_endpoint') || '';
 let customTranslationModel = localStorage.getItem('nihonsub_custom_model') || localStorage.getItem('koesub_custom_model') || '';
 
@@ -69,8 +70,13 @@ const settingsBtn = document.getElementById('settingsBtn');
 const settingsModal = document.getElementById('settingsModal');
 const closeSettingsBtn = document.getElementById('closeSettingsBtn');
 const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+const testCustomApiBtn = document.getElementById('testCustomApiBtn');
+const presetTopToolsBtn = document.getElementById('presetTopToolsBtn');
+const presetLocalOllamaBtn = document.getElementById('presetLocalOllamaBtn');
+const presetClearCustomBtn = document.getElementById('presetClearCustomBtn');
 const groqApiKeyInput = document.getElementById('groqApiKeyInput');
 const openRouterApiKeyInput = document.getElementById('openRouterApiKeyInput');
+const customApiKeyInput = document.getElementById('customApiKeyInput');
 const customEndpointInput = document.getElementById('customEndpointInput');
 const customModelInput = document.getElementById('customModelInput');
 const settingsMessage = document.getElementById('settingsMessage');
@@ -127,13 +133,14 @@ async function checkConfig() {
 
 function updateCustomTranslatorUI() {
   if (customTranslationEndpoint) {
-    activeTranslatorNotice.textContent = `Using Custom Translation API: ${customTranslationEndpoint} (${customTranslationModel || 'default model'})`;
+    activeTranslatorNotice.textContent = `Using Custom Translation API: ${customTranslationEndpoint} (${customTranslationModel || 'Top-Tools-Ai'})`;
     activeTranslatorNotice.style.color = 'var(--cyan)';
   } else {
     activeTranslatorNotice.textContent = `Using Built-in AI Translator (Whisper Large-v3 + Contextual LLM)`;
     activeTranslatorNotice.style.color = 'var(--text-muted)';
   }
 
+  if (customApiKeyInput) customApiKeyInput.value = customTranslationApiKey;
   if (customEndpointInput) customEndpointInput.value = customTranslationEndpoint;
   if (customModelInput) customModelInput.value = customTranslationModel;
 }
@@ -209,8 +216,77 @@ function setupEventListeners() {
   startOverBtn.addEventListener('click', handleStartOver);
 
   // Re-translate with custom API
-  sendToTranslatorBtn.addEventListener('click', () => {
-    settingsModal.classList.remove('hidden');
+  sendToTranslatorBtn.addEventListener('click', async () => {
+    if (!currentPipelineData || !currentPipelineData.jobId) {
+      settingsModal.classList.remove('hidden');
+      return;
+    }
+
+    if (!customTranslationEndpoint) {
+      settingsModal.classList.remove('hidden');
+      settingsMessage.textContent = 'Please configure your Custom Translation API URL and API Key first.';
+      settingsMessage.className = 'settings-msg error';
+      settingsMessage.classList.remove('hidden');
+      return;
+    }
+
+    const targetLangToUse = currentPipelineData.targetLang || 'both';
+    const modelToUse = customTranslationModel || 'Top-Tools-Ai';
+
+    const confirmed = confirm(
+      `Re-translate this video with Custom Translation API?\n\n` +
+      `• Endpoint: ${customTranslationEndpoint}\n` +
+      `• Model: ${modelToUse}\n` +
+      `• Target Language: ${targetLangToUse.toUpperCase()}\n\n` +
+      `This will run your transcript through your Custom API immediately without re-uploading or re-extracting audio!`
+    );
+
+    if (!confirmed) return;
+
+    sendToTranslatorBtn.disabled = true;
+    const origBtnText = sendToTranslatorBtn.innerHTML;
+    sendToTranslatorBtn.innerHTML = '⏳ Translating...';
+    appendActivityLog(`[Custom API] Requesting re-translation via ${customTranslationEndpoint} (${modelToUse})...`, 'system');
+
+    try {
+      const res = await fetch('/api/retranslate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobId: currentPipelineData.jobId,
+          targetLang: targetLangToUse,
+          hindiScript: (document.querySelector('input[name="hindiScript"]:checked') || {}).value || 'devanagari',
+          customEndpoint: customTranslationEndpoint,
+          customModel: customTranslationModel,
+          customApiKey: customTranslationApiKey
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Re-translation failed.');
+      }
+
+      // Merge new subtitles into activeSubtitlesData
+      if (!activeSubtitlesData) activeSubtitlesData = {};
+      Object.assign(activeSubtitlesData, data.subtitles);
+
+      populateSubtitleSelect(targetLangToUse);
+
+      // Switch to translated track
+      const preferredTrack = (targetLangToUse === 'hi') ? 'hi' : 'en';
+      subLangSelect.value = activeSubtitlesData[preferredTrack] ? preferredTrack : Object.keys(data.subtitles)[0];
+      switchSubtitleLanguage(subLangSelect.value);
+
+      appendActivityLog(`[Custom API] Re-translation successful! Subtitles updated in player.`, 'system');
+      alert(`🎉 Re-translation completed via Custom API (${modelToUse})!\nSubtitles and transcript have been updated.`);
+    } catch (err) {
+      appendActivityLog(`[Custom API Error] ${err.message}`, 'error');
+      alert(`Re-translation failed: ${err.message}`);
+    } finally {
+      sendToTranslatorBtn.disabled = false;
+      sendToTranslatorBtn.innerHTML = origBtnText;
+    }
   });
 
   // Subtitle Language Switcher
@@ -300,13 +376,13 @@ function setupEventListeners() {
   saveSettingsBtn.addEventListener('click', async () => {
     const groqKey = groqApiKeyInput.value.trim();
     const openRouterKey = openRouterApiKeyInput.value.trim();
+    customTranslationApiKey = customApiKeyInput ? customApiKeyInput.value.trim() : '';
     customTranslationEndpoint = customEndpointInput.value.trim();
     customTranslationModel = customModelInput.value.trim();
 
+    localStorage.setItem('nihonsub_custom_api_key', customTranslationApiKey);
     localStorage.setItem('nihonsub_custom_endpoint', customTranslationEndpoint);
     localStorage.setItem('nihonsub_custom_model', customTranslationModel);
-    localStorage.setItem('koesub_custom_endpoint', customTranslationEndpoint);
-    localStorage.setItem('koesub_custom_model', customTranslationModel);
     updateCustomTranslatorUI();
 
     try {
@@ -315,7 +391,10 @@ function setupEventListeners() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           groqApiKey: groqKey,
-          openRouterApiKey: openRouterKey
+          openRouterApiKey: openRouterKey,
+          customApiKey: customTranslationApiKey,
+          customEndpoint: customTranslationEndpoint,
+          customModel: customTranslationModel
         })
       });
       const data = await res.json();
@@ -332,6 +411,90 @@ function setupEventListeners() {
       settingsMessage.classList.remove('hidden');
     }
   });
+
+  // Preset: top-tools-ai.com
+  if (presetTopToolsBtn) {
+    presetTopToolsBtn.addEventListener('click', () => {
+      customEndpointInput.value = 'https://top-tools-ai.com/api/v1';
+      customModelInput.value = 'Top-Tools-Ai';
+      settingsMessage.textContent = '⚡ Preset applied: top-tools-ai.com (Model: Top-Tools-Ai). Enter your API Key and click Test or Save.';
+      settingsMessage.className = 'settings-msg success';
+      settingsMessage.classList.remove('hidden');
+    });
+  }
+
+  // Preset: Local Ollama
+  if (presetLocalOllamaBtn) {
+    presetLocalOllamaBtn.addEventListener('click', () => {
+      customEndpointInput.value = 'http://localhost:11434/v1';
+      customModelInput.value = 'qwen2.5:7b';
+      if (customApiKeyInput) customApiKeyInput.value = 'ollama';
+      settingsMessage.textContent = '🦙 Preset applied: Local Ollama (qwen2.5:7b).';
+      settingsMessage.className = 'settings-msg success';
+      settingsMessage.classList.remove('hidden');
+    });
+  }
+
+  // Preset: Clear
+  if (presetClearCustomBtn) {
+    presetClearCustomBtn.addEventListener('click', () => {
+      if (customApiKeyInput) customApiKeyInput.value = '';
+      customEndpointInput.value = '';
+      customModelInput.value = '';
+      settingsMessage.textContent = 'Cleared custom translation endpoint. Will use default built-in translator.';
+      settingsMessage.className = 'settings-msg success';
+      settingsMessage.classList.remove('hidden');
+    });
+  }
+
+  // Test Custom Connection Button
+  if (testCustomApiBtn) {
+    testCustomApiBtn.addEventListener('click', async () => {
+      const endpoint = customEndpointInput.value.trim();
+      const model = customModelInput.value.trim() || 'Top-Tools-Ai';
+      const apiKey = customApiKeyInput ? customApiKeyInput.value.trim() : '';
+
+      if (!endpoint) {
+        settingsMessage.textContent = 'Please enter a custom translation API URL.';
+        settingsMessage.className = 'settings-msg error';
+        settingsMessage.classList.remove('hidden');
+        return;
+      }
+
+      if (!apiKey) {
+        settingsMessage.textContent = 'Please enter your Custom API Key (from top-tools-ai.com) to test.';
+        settingsMessage.className = 'settings-msg error';
+        settingsMessage.classList.remove('hidden');
+        return;
+      }
+
+      settingsMessage.textContent = `⏳ Testing connection to ${endpoint} (${model})...`;
+      settingsMessage.className = 'settings-msg';
+      settingsMessage.classList.remove('hidden');
+      testCustomApiBtn.disabled = true;
+
+      try {
+        const res = await fetch('/api/test-custom-api', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint, model, apiKey })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          settingsMessage.innerHTML = `✅ <strong>Connected successfully!</strong><br>Model: <code>${data.model}</code><br>Test Translation: <em>"${data.reply}"</em>`;
+          settingsMessage.className = 'settings-msg success';
+        } else {
+          settingsMessage.textContent = `❌ Test failed: ${data.error || 'Unknown error'}`;
+          settingsMessage.className = 'settings-msg error';
+        }
+      } catch (err) {
+        settingsMessage.textContent = `❌ Network error: ${err.message}`;
+        settingsMessage.className = 'settings-msg error';
+      } finally {
+        testCustomApiBtn.disabled = false;
+      }
+    });
+  }
 }
 
 function handleFileSelection(file) {
@@ -427,7 +590,10 @@ async function handleStartPipeline() {
   if (customTranslationEndpoint) {
     formData.append('customTranslationEndpoint', customTranslationEndpoint);
     formData.append('customTranslationModel', customTranslationModel);
-    appendActivityLog(`Using custom translation endpoint: ${customTranslationEndpoint}`, 'system');
+    if (customTranslationApiKey) {
+      formData.append('customTranslationApiKey', customTranslationApiKey);
+    }
+    appendActivityLog(`Using custom translation endpoint: ${customTranslationEndpoint} (${customTranslationModel || 'Top-Tools-Ai'})`, 'system');
   }
 
   try {
