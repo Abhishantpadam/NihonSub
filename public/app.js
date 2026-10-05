@@ -97,6 +97,10 @@ document.addEventListener('DOMContentLoaded', () => {
     subStyleSelect.value = activeSubtitleStyle;
     updateSubtitleOverlayStyle();
   }
+
+  if (transcriptSearch) {
+    transcriptSearch.value = '';
+  }
 });
 
 // Check Server Configuration / API Key
@@ -490,6 +494,11 @@ async function handleStartPipeline() {
       // Mount Local Video
       mainVideoPlayer.src = URL.createObjectURL(selectedFile);
 
+      // Clear any search filter on player mount
+      if (transcriptSearch) {
+        transcriptSearch.value = '';
+      }
+
       // Populate Subtitle Options
       populateSubtitleSelect(targetLang);
 
@@ -758,5 +767,8 @@ function handleStartOver() {
   activeSegmentIndex = -1;
   timeOffset = 0.0;
   offsetValue.textContent = '0.0s';
+  if (transcriptSearch) {
+    transcriptSearch.value = '';
+  }
   resetFileSelection();
 }
