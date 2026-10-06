@@ -11,10 +11,30 @@ let autoScrollEnabled = true;
 let userScrollTimeout = null;
 let activeSubtitleStyle = localStorage.getItem('nihonsub_sub_style') || localStorage.getItem('koesub_sub_style') || 'transparent';
 
-// Custom Translation API settings (stored in localStorage)
-let customTranslationApiKey = localStorage.getItem('nihonsub_custom_api_key') || localStorage.getItem('koesub_custom_api_key') || '';
-let customTranslationEndpoint = localStorage.getItem('nihonsub_custom_endpoint') || localStorage.getItem('koesub_custom_endpoint') || '';
-let customTranslationModel = localStorage.getItem('nihonsub_custom_model') || localStorage.getItem('koesub_custom_model') || '';
+// Speech-to-Text Transcription Config
+let transcriptionConfig = {
+  baseUrl: 'https://api.groq.com/openai/v1',
+  model: 'whisper-large-v3',
+  apiKey: ''
+};
+
+// Translation Providers Fallback Chain (Priority Order)
+let translationProviders = [
+  {
+    id: 'prov_groq',
+    name: 'Groq LPU (Primary)',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    model: 'qwen/qwen3.8-27b',
+    apiKey: ''
+  },
+  {
+    id: 'prov_toptools',
+    name: 'top-tools-ai.com',
+    baseUrl: 'https://top-tools-ai.com/api/v1',
+    model: 'Top-Tools-Ai',
+    apiKey: ''
+  }
+];
 
 // Containers
 const step1Section = document.getElementById('step1Section');
@@ -64,22 +84,41 @@ const transcriptSearch = document.getElementById('transcriptSearch');
 const segmentCountBadge = document.getElementById('segmentCountBadge');
 const resumeAutoScrollBtn = document.getElementById('resumeAutoScrollBtn');
 
-// Settings Modal & Global Activity Log Elements
+// Settings Modal Elements
 const apiKeyStatus = document.getElementById('apiKeyStatus');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsModal = document.getElementById('settingsModal');
 const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+const closeSettingsFooterBtn = document.getElementById('closeSettingsFooterBtn');
 const saveSettingsBtn = document.getElementById('saveSettingsBtn');
-const testCustomApiBtn = document.getElementById('testCustomApiBtn');
-const presetTopToolsBtn = document.getElementById('presetTopToolsBtn');
-const presetLocalOllamaBtn = document.getElementById('presetLocalOllamaBtn');
-const presetClearCustomBtn = document.getElementById('presetClearCustomBtn');
-const groqApiKeyInput = document.getElementById('groqApiKeyInput');
-const openRouterApiKeyInput = document.getElementById('openRouterApiKeyInput');
-const customApiKeyInput = document.getElementById('customApiKeyInput');
-const customEndpointInput = document.getElementById('customEndpointInput');
-const customModelInput = document.getElementById('customModelInput');
+const resetDefaultsBtn = document.getElementById('resetDefaultsBtn');
 const settingsMessage = document.getElementById('settingsMessage');
+
+// Settings Navigation Tabs
+const tabBtnTranscription = document.getElementById('tabBtnTranscription');
+const tabBtnTranslation = document.getElementById('tabBtnTranslation');
+const tabPaneTranscription = document.getElementById('tabPaneTranscription');
+const tabPaneTranslation = document.getElementById('tabPaneTranslation');
+const tabProviderCount = document.getElementById('tabProviderCount');
+
+// Transcription Tab Elements
+const transcriptionEndpointInput = document.getElementById('transcriptionEndpointInput');
+const transcriptionModelInput = document.getElementById('transcriptionModelInput');
+const transcriptionApiKeyInput = document.getElementById('transcriptionApiKeyInput');
+const toggleTransKeyEye = document.getElementById('toggleTransKeyEye');
+const testTranscriptionBtn = document.getElementById('testTranscriptionBtn');
+const transcriptionTestStatus = document.getElementById('transcriptionTestStatus');
+const presetGroqWhisperBtn = document.getElementById('presetGroqWhisperBtn');
+const presetOpenAIWhisperBtn = document.getElementById('presetOpenAIWhisperBtn');
+const presetLocalWhisperBtn = document.getElementById('presetLocalWhisperBtn');
+
+// Translation Fallback Chain Elements
+const translationProvidersContainer = document.getElementById('translationProvidersContainer');
+const addCustomProviderBtn = document.getElementById('addCustomProviderBtn');
+const addGroqProviderBtn = document.getElementById('addGroqProviderBtn');
+const addTopToolsProviderBtn = document.getElementById('addTopToolsProviderBtn');
+const addOpenRouterProviderBtn = document.getElementById('addOpenRouterProviderBtn');
+const addOllamaProviderBtn = document.getElementById('addOllamaProviderBtn');
 
 const activityLogToggleBtn = document.getElementById('activityLogToggleBtn');
 const activityLogModal = document.getElementById('activityLogModal');
@@ -94,6 +133,7 @@ let globalLogCounter = 0;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+  loadStoredSettings();
   checkConfig();
   setupEventListeners();
   setupKeyboardShortcuts();
@@ -109,20 +149,82 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
+// Load settings from localStorage
+function loadStoredSettings() {
+  try {
+    const raw = localStorage.getItem('nihonsub_settings_v3');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.transcriptionConfig) {
+        transcriptionConfig = { ...transcriptionConfig, ...parsed.transcriptionConfig };
+      }
+      if (Array.isArray(parsed.translationProviders) && parsed.translationProviders.length > 0) {
+        translationProviders = parsed.translationProviders;
+      }
+    } else {
+      // Legacy migration
+      const legacyKey = localStorage.getItem('nihonsub_custom_api_key') || '';
+      const legacyEndpoint = localStorage.getItem('nihonsub_custom_endpoint') || '';
+      const legacyModel = localStorage.getItem('nihonsub_custom_model') || '';
+      if (legacyEndpoint || legacyKey) {
+        const topToolsProv = translationProviders.find(p => p.id === 'prov_toptools');
+        if (topToolsProv) {
+          topToolsProv.baseUrl = legacyEndpoint || 'https://top-tools-ai.com/api/v1';
+          topToolsProv.model = legacyModel || 'Top-Tools-Ai';
+          topToolsProv.apiKey = legacyKey;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to parse local settings:', err);
+  }
+}
+
 // Check Server Configuration / API Key
 async function checkConfig() {
   try {
     const res = await fetch('/api/config');
     const data = await res.json();
+
+    if (data.transcription) {
+      if (data.transcription.baseUrl) transcriptionConfig.baseUrl = data.transcription.baseUrl;
+      if (data.transcription.model) transcriptionConfig.model = data.transcription.model;
+      if (!transcriptionConfig.apiKey && data.transcription.maskedKey) {
+        transcriptionConfig.apiKey = data.transcription.maskedKey;
+      }
+    }
+
+    if (Array.isArray(data.translationProviders) && data.translationProviders.length > 0) {
+      data.translationProviders.forEach(srvProv => {
+        const localProv = translationProviders.find(p => p.id === srvProv.id);
+        if (localProv) {
+          if (!localProv.apiKey && srvProv.maskedKey) {
+            localProv.apiKey = srvProv.maskedKey;
+          }
+        } else if (srvProv.hasKey) {
+          translationProviders.push({
+            id: srvProv.id,
+            name: srvProv.name,
+            baseUrl: srvProv.baseUrl,
+            model: srvProv.model,
+            apiKey: srvProv.maskedKey || ''
+          });
+        }
+      });
+    }
+
     if (apiKeyStatus) {
       if (data.groqConfigured) {
         apiKeyStatus.className = 'status-chip ready';
-        apiKeyStatus.querySelector('.text').textContent = `Groq: ${data.maskedKey}`;
+        apiKeyStatus.querySelector('.text').textContent = `Speech: ${data.transcription?.model || 'Whisper'}`;
       } else {
         apiKeyStatus.className = 'status-chip missing';
-        apiKeyStatus.querySelector('.text').textContent = 'Groq Key Missing';
+        apiKeyStatus.querySelector('.text').textContent = 'Key Missing';
       }
     }
+
+    renderSettingsUI();
+    updateCustomTranslatorUI();
   } catch {
     if (apiKeyStatus) {
       apiKeyStatus.className = 'status-chip missing';
@@ -132,17 +234,21 @@ async function checkConfig() {
 }
 
 function updateCustomTranslatorUI() {
-  if (customTranslationEndpoint) {
-    activeTranslatorNotice.textContent = `Using Custom Translation API: ${customTranslationEndpoint} (${customTranslationModel || 'Top-Tools-Ai'})`;
+  if (!activeTranslatorNotice) return;
+  const activeCount = translationProviders.length;
+  const primary = translationProviders[0] || { name: 'Groq LPU', model: 'qwen3.8-27b' };
+
+  if (activeCount > 1) {
+    const secondary = translationProviders[1];
+    activeTranslatorNotice.textContent = `⚡ Multi-AI Active: ${primary.name} ➔ ${secondary.name} (Fallback)`;
     activeTranslatorNotice.style.color = 'var(--cyan)';
+  } else if (primary) {
+    activeTranslatorNotice.textContent = `Using Translator: ${primary.name} (${primary.model})`;
+    activeTranslatorNotice.style.color = 'var(--text-main)';
   } else {
-    activeTranslatorNotice.textContent = `Using Built-in AI Translator (Whisper Large-v3 + Contextual LLM)`;
+    activeTranslatorNotice.textContent = `Using Built-in AI Translator`;
     activeTranslatorNotice.style.color = 'var(--text-muted)';
   }
-
-  if (customApiKeyInput) customApiKeyInput.value = customTranslationApiKey;
-  if (customEndpointInput) customEndpointInput.value = customTranslationEndpoint;
-  if (customModelInput) customModelInput.value = customTranslationModel;
 }
 
 function setupEventListeners() {
@@ -215,30 +321,31 @@ function setupEventListeners() {
   // Start Over Button
   startOverBtn.addEventListener('click', handleStartOver);
 
-  // Re-translate with custom API
+  // Configure Translator Link on Main Screen
+  if (configureTranslatorLink) {
+    configureTranslatorLink.addEventListener('click', () => {
+      settingsModal.classList.remove('hidden');
+      switchSettingsTab('translation');
+    });
+  }
+
+  // Re-translate with AI Fallback Chain
   sendToTranslatorBtn.addEventListener('click', async () => {
     if (!currentPipelineData || !currentPipelineData.jobId) {
       settingsModal.classList.remove('hidden');
       return;
     }
 
-    if (!customTranslationEndpoint) {
-      settingsModal.classList.remove('hidden');
-      settingsMessage.textContent = 'Please configure your Custom Translation API URL and API Key first.';
-      settingsMessage.className = 'settings-msg error';
-      settingsMessage.classList.remove('hidden');
-      return;
-    }
-
+    const primaryProv = translationProviders[0] || { name: 'Primary AI', model: 'qwen3.8-27b' };
+    const fallbackCount = Math.max(0, translationProviders.length - 1);
     const targetLangToUse = currentPipelineData.targetLang || 'both';
-    const modelToUse = customTranslationModel || 'Top-Tools-Ai';
 
     const confirmed = confirm(
-      `Re-translate this video with Custom Translation API?\n\n` +
-      `• Endpoint: ${customTranslationEndpoint}\n` +
-      `• Model: ${modelToUse}\n` +
+      `Re-translate this video using the AI Fallback Chain?\n\n` +
+      `• Primary Engine: ${primaryProv.name} (${primaryProv.model})\n` +
+      `• Fallback Providers: ${fallbackCount} configured\n` +
       `• Target Language: ${targetLangToUse.toUpperCase()}\n\n` +
-      `This will run your transcript through your Custom API immediately without re-uploading or re-extracting audio!`
+      `This will run your Japanese transcript through the translation chain immediately without re-extracting audio!`
     );
 
     if (!confirmed) return;
@@ -246,7 +353,7 @@ function setupEventListeners() {
     sendToTranslatorBtn.disabled = true;
     const origBtnText = sendToTranslatorBtn.innerHTML;
     sendToTranslatorBtn.innerHTML = '⏳ Translating...';
-    appendActivityLog(`[Custom API] Requesting re-translation via ${customTranslationEndpoint} (${modelToUse})...`, 'system');
+    appendActivityLog(`[Re-translation] Dispatched to ${primaryProv.name} with automatic failover...`, 'system');
 
     try {
       const res = await fetch('/api/retranslate', {
@@ -256,9 +363,7 @@ function setupEventListeners() {
           jobId: currentPipelineData.jobId,
           targetLang: targetLangToUse,
           hindiScript: (document.querySelector('input[name="hindiScript"]:checked') || {}).value || 'devanagari',
-          customEndpoint: customTranslationEndpoint,
-          customModel: customTranslationModel,
-          customApiKey: customTranslationApiKey
+          translationProviders: translationProviders
         })
       });
 
@@ -278,10 +383,10 @@ function setupEventListeners() {
       subLangSelect.value = activeSubtitlesData[preferredTrack] ? preferredTrack : Object.keys(data.subtitles)[0];
       switchSubtitleLanguage(subLangSelect.value);
 
-      appendActivityLog(`[Custom API] Re-translation successful! Subtitles updated in player.`, 'system');
-      alert(`🎉 Re-translation completed via Custom API (${modelToUse})!\nSubtitles and transcript have been updated.`);
+      appendActivityLog(`[Re-translation] Subtitles updated successfully in cinema player!`, 'system');
+      alert(`🎉 Re-translation completed via ${primaryProv.name}!\nSubtitles and interactive transcript have been refreshed.`);
     } catch (err) {
-      appendActivityLog(`[Custom API Error] ${err.message}`, 'error');
+      appendActivityLog(`[Re-translation Error] ${err.message}`, 'error');
       alert(`Re-translation failed: ${err.message}`);
     } finally {
       sendToTranslatorBtn.disabled = false;
@@ -369,132 +474,446 @@ function setupEventListeners() {
     updateLogBadges();
   });
 
-  // Settings Modal
-  settingsBtn.addEventListener('click', () => settingsModal.classList.remove('hidden'));
+  // ==========================================
+  // SETTINGS MODAL INTERACTION & TABS
+  // ==========================================
+  settingsBtn.addEventListener('click', () => {
+    renderSettingsUI();
+    settingsModal.classList.remove('hidden');
+  });
+
   closeSettingsBtn.addEventListener('click', () => settingsModal.classList.add('hidden'));
+  if (closeSettingsFooterBtn) {
+    closeSettingsFooterBtn.addEventListener('click', () => settingsModal.classList.add('hidden'));
+  }
 
+  // Settings Tabs Switcher
+  if (tabBtnTranscription) {
+    tabBtnTranscription.addEventListener('click', () => switchSettingsTab('transcription'));
+  }
+  if (tabBtnTranslation) {
+    tabBtnTranslation.addEventListener('click', () => switchSettingsTab('translation'));
+  }
+
+  // Toggle Transcription API Key Eye
+  if (toggleTransKeyEye && transcriptionApiKeyInput) {
+    toggleTransKeyEye.addEventListener('click', () => {
+      const isPass = transcriptionApiKeyInput.type === 'password';
+      transcriptionApiKeyInput.type = isPass ? 'text' : 'password';
+      toggleTransKeyEye.textContent = isPass ? '🙈' : '👁️';
+    });
+  }
+
+  // Transcription Presets
+  if (presetGroqWhisperBtn) {
+    presetGroqWhisperBtn.addEventListener('click', () => {
+      transcriptionEndpointInput.value = 'https://api.groq.com/openai/v1';
+      transcriptionModelInput.value = 'whisper-large-v3';
+      showSettingsNotice('⚡ Preset applied: Groq Whisper Large-v3 (Default / High Speed). Enter your API Key.');
+    });
+  }
+  if (presetOpenAIWhisperBtn) {
+    presetOpenAIWhisperBtn.addEventListener('click', () => {
+      transcriptionEndpointInput.value = 'https://api.openai.com/v1';
+      transcriptionModelInput.value = 'whisper-1';
+      showSettingsNotice('🌐 Preset applied: OpenAI Whisper-1. Enter your OpenAI API Key.');
+    });
+  }
+  if (presetLocalWhisperBtn) {
+    presetLocalWhisperBtn.addEventListener('click', () => {
+      transcriptionEndpointInput.value = 'http://localhost:8000/v1';
+      transcriptionModelInput.value = 'whisper-1';
+      showSettingsNotice('💻 Preset applied: Local Whisper Endpoint (http://localhost:8000/v1).');
+    });
+  }
+
+  // Test Transcription Connection
+  if (testTranscriptionBtn) {
+    testTranscriptionBtn.addEventListener('click', async () => {
+      const baseUrl = transcriptionEndpointInput.value.trim();
+      const model = transcriptionModelInput.value.trim() || 'whisper-large-v3';
+      const apiKey = transcriptionApiKeyInput.value.trim();
+
+      if (!apiKey) {
+        showTranscriptionTestStatus('error', 'Please enter your Transcription API Key to test.');
+        return;
+      }
+
+      showTranscriptionTestStatus('testing', `Testing connection to ${baseUrl}...`);
+      testTranscriptionBtn.disabled = true;
+
+      try {
+        const res = await fetch('/api/test-transcription-api', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ baseUrl, model, apiKey })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          showTranscriptionTestStatus('success', `✅ ${data.message || 'Connected successfully!'}`);
+        } else {
+          showTranscriptionTestStatus('error', `❌ ${data.error || 'Connection failed'}`);
+        }
+      } catch (err) {
+        showTranscriptionTestStatus('error', `❌ Network error: ${err.message}`);
+      } finally {
+        testTranscriptionBtn.disabled = false;
+      }
+    });
+  }
+
+  // Translation Preset: Add Groq
+  if (addGroqProviderBtn) {
+    addGroqProviderBtn.addEventListener('click', () => {
+      translationProviders.push({
+        id: 'prov_' + Date.now(),
+        name: 'Groq LPU (Qwen 3.8)',
+        baseUrl: 'https://api.groq.com/openai/v1',
+        model: 'qwen/qwen3.8-27b',
+        apiKey: ''
+      });
+      renderTranslationProviders();
+      showSettingsNotice('Added Groq (Qwen 3.8) to translation fallback chain.');
+    });
+  }
+
+  // Translation Preset: Add top-tools-ai.com
+  if (addTopToolsProviderBtn) {
+    addTopToolsProviderBtn.addEventListener('click', () => {
+      translationProviders.push({
+        id: 'prov_' + Date.now(),
+        name: 'top-tools-ai.com',
+        baseUrl: 'https://top-tools-ai.com/api/v1',
+        model: 'Top-Tools-Ai',
+        apiKey: ''
+      });
+      renderTranslationProviders();
+      showSettingsNotice('Added top-tools-ai.com to translation fallback chain. Enter your API Key.');
+    });
+  }
+
+  // Translation Preset: Add OpenRouter
+  if (addOpenRouterProviderBtn) {
+    addOpenRouterProviderBtn.addEventListener('click', () => {
+      translationProviders.push({
+        id: 'prov_' + Date.now(),
+        name: 'OpenRouter (DeepSeek)',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: 'deepseek/deepseek-chat',
+        apiKey: ''
+      });
+      renderTranslationProviders();
+      showSettingsNotice('Added OpenRouter (DeepSeek) to translation fallback chain.');
+    });
+  }
+
+  // Translation Preset: Add Local Ollama
+  if (addOllamaProviderBtn) {
+    addOllamaProviderBtn.addEventListener('click', () => {
+      translationProviders.push({
+        id: 'prov_' + Date.now(),
+        name: 'Local Ollama',
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'qwen2.5:7b',
+        apiKey: 'ollama'
+      });
+      renderTranslationProviders();
+      showSettingsNotice('Added Local Ollama (qwen2.5:7b) to translation chain.');
+    });
+  }
+
+  // Add Custom Blank Provider Button
+  if (addCustomProviderBtn) {
+    addCustomProviderBtn.addEventListener('click', () => {
+      const newIndex = translationProviders.length + 1;
+      translationProviders.push({
+        id: 'prov_' + Date.now(),
+        name: `Custom Provider #${newIndex}`,
+        baseUrl: 'https://top-tools-ai.com/api/v1',
+        model: 'Top-Tools-Ai',
+        apiKey: ''
+      });
+      renderTranslationProviders();
+      showSettingsNotice(`Added new Translation Provider slot #${newIndex}. Fill in the details and save.`);
+    });
+  }
+
+  // Reset Defaults
+  if (resetDefaultsBtn) {
+    resetDefaultsBtn.addEventListener('click', () => {
+      if (!confirm('Reset all settings to recommended defaults?')) return;
+      transcriptionConfig = {
+        baseUrl: 'https://api.groq.com/openai/v1',
+        model: 'whisper-large-v3',
+        apiKey: ''
+      };
+      translationProviders = [
+        {
+          id: 'prov_groq',
+          name: 'Groq LPU (Primary)',
+          baseUrl: 'https://api.groq.com/openai/v1',
+          model: 'qwen/qwen3.8-27b',
+          apiKey: ''
+        },
+        {
+          id: 'prov_toptools',
+          name: 'top-tools-ai.com',
+          baseUrl: 'https://top-tools-ai.com/api/v1',
+          model: 'Top-Tools-Ai',
+          apiKey: ''
+        }
+      ];
+      renderSettingsUI();
+      showSettingsNotice('Settings reset to defaults. Remember to click Save.');
+    });
+  }
+
+  // Save Settings
   saveSettingsBtn.addEventListener('click', async () => {
-    const groqKey = groqApiKeyInput.value.trim();
-    const openRouterKey = openRouterApiKeyInput.value.trim();
-    customTranslationApiKey = customApiKeyInput ? customApiKeyInput.value.trim() : '';
-    customTranslationEndpoint = customEndpointInput.value.trim();
-    customTranslationModel = customModelInput.value.trim();
+    // 1. Read transcription inputs
+    transcriptionConfig.baseUrl = transcriptionEndpointInput.value.trim() || 'https://api.groq.com/openai/v1';
+    transcriptionConfig.model = transcriptionModelInput.value.trim() || 'whisper-large-v3';
+    transcriptionConfig.apiKey = transcriptionApiKeyInput.value.trim();
 
-    localStorage.setItem('nihonsub_custom_api_key', customTranslationApiKey);
-    localStorage.setItem('nihonsub_custom_endpoint', customTranslationEndpoint);
-    localStorage.setItem('nihonsub_custom_model', customTranslationModel);
+    // 2. Read each translation provider from rendered DOM cards
+    translationProviders.forEach(prov => {
+      const card = document.getElementById(`card_${prov.id}`);
+      if (card) {
+        const nameInput = card.querySelector('.provider-name-input');
+        const baseInput = card.querySelector('.provider-baseurl-input');
+        const modelInput = card.querySelector('.provider-model-input');
+        const keyInput = card.querySelector('.provider-apikey-input');
+
+        if (nameInput) prov.name = nameInput.value.trim() || prov.name;
+        if (baseInput) prov.baseUrl = baseInput.value.trim() || prov.baseUrl;
+        if (modelInput) prov.model = modelInput.value.trim() || prov.model;
+        if (keyInput) prov.apiKey = keyInput.value.trim();
+      }
+    });
+
+    // 3. Persist to localStorage
+    localStorage.setItem('nihonsub_settings_v3', JSON.stringify({
+      transcriptionConfig,
+      translationProviders
+    }));
+
     updateCustomTranslatorUI();
 
+    // 4. Send to server
     try {
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          groqApiKey: groqKey,
-          openRouterApiKey: openRouterKey,
-          customApiKey: customTranslationApiKey,
-          customEndpoint: customTranslationEndpoint,
-          customModel: customTranslationModel
+          transcription: transcriptionConfig,
+          translationProviders: translationProviders
         })
       });
       const data = await res.json();
       if (data.success) {
-        settingsMessage.textContent = 'Settings and custom translation configuration saved!';
+        settingsMessage.textContent = '✅ All settings and translation fallback providers saved successfully!';
         settingsMessage.className = 'settings-msg success';
         settingsMessage.classList.remove('hidden');
         checkConfig();
         setTimeout(() => settingsModal.classList.add('hidden'), 1200);
+      } else {
+        throw new Error(data.error || 'Server rejected settings.');
       }
-    } catch {
-      settingsMessage.textContent = 'Failed to save settings to server.';
+    } catch (err) {
+      settingsMessage.textContent = `❌ Failed to save to server: ${err.message}`;
       settingsMessage.className = 'settings-msg error';
       settingsMessage.classList.remove('hidden');
     }
   });
+}
 
-  // Preset: top-tools-ai.com
-  if (presetTopToolsBtn) {
-    presetTopToolsBtn.addEventListener('click', () => {
-      customEndpointInput.value = 'https://top-tools-ai.com/api/v1';
-      customModelInput.value = 'Top-Tools-Ai';
-      settingsMessage.textContent = '⚡ Preset applied: top-tools-ai.com (Model: Top-Tools-Ai). Enter your API Key and click Test or Save.';
-      settingsMessage.className = 'settings-msg success';
-      settingsMessage.classList.remove('hidden');
-    });
+function switchSettingsTab(tabName) {
+  if (tabName === 'transcription') {
+    tabBtnTranscription.classList.add('active');
+    tabBtnTranslation.classList.remove('active');
+    tabPaneTranscription.classList.remove('hidden');
+    tabPaneTranslation.classList.add('hidden');
+  } else {
+    tabBtnTranslation.classList.add('active');
+    tabBtnTranscription.classList.remove('active');
+    tabPaneTranslation.classList.remove('hidden');
+    tabPaneTranscription.classList.add('hidden');
   }
+}
 
-  // Preset: Local Ollama
-  if (presetLocalOllamaBtn) {
-    presetLocalOllamaBtn.addEventListener('click', () => {
-      customEndpointInput.value = 'http://localhost:11434/v1';
-      customModelInput.value = 'qwen2.5:7b';
-      if (customApiKeyInput) customApiKeyInput.value = 'ollama';
-      settingsMessage.textContent = '🦙 Preset applied: Local Ollama (qwen2.5:7b).';
-      settingsMessage.className = 'settings-msg success';
-      settingsMessage.classList.remove('hidden');
+function showSettingsNotice(msg) {
+  if (!settingsMessage) return;
+  settingsMessage.textContent = msg;
+  settingsMessage.className = 'settings-msg success';
+  settingsMessage.classList.remove('hidden');
+  setTimeout(() => settingsMessage.classList.add('hidden'), 4000);
+}
+
+function showTranscriptionTestStatus(type, msg) {
+  if (!transcriptionTestStatus) return;
+  transcriptionTestStatus.className = `provider-test-status ${type}`;
+  transcriptionTestStatus.textContent = msg;
+  transcriptionTestStatus.classList.remove('hidden');
+}
+
+function renderSettingsUI() {
+  if (transcriptionEndpointInput) transcriptionEndpointInput.value = transcriptionConfig.baseUrl || 'https://api.groq.com/openai/v1';
+  if (transcriptionModelInput) transcriptionModelInput.value = transcriptionConfig.model || 'whisper-large-v3';
+  if (transcriptionApiKeyInput) transcriptionApiKeyInput.value = transcriptionConfig.apiKey || '';
+
+  renderTranslationProviders();
+}
+
+function renderTranslationProviders() {
+  if (!translationProvidersContainer) return;
+  if (tabProviderCount) tabProviderCount.textContent = translationProviders.length;
+
+  translationProvidersContainer.innerHTML = '';
+
+  translationProviders.forEach((prov, idx) => {
+    const isPrimary = idx === 0;
+    const priorityLabel = isPrimary ? '🟢 #1 PRIMARY' : `🟡 #${idx + 1} FALLBACK`;
+    const priorityClass = isPrimary ? 'primary' : 'fallback';
+    const cardClass = isPrimary ? 'is-primary' : 'is-fallback';
+
+    const card = document.createElement('div');
+    card.className = `provider-card ${cardClass}`;
+    card.id = `card_${prov.id}`;
+
+    card.innerHTML = `
+      <div class="provider-card-header">
+        <div class="provider-title-group">
+          <span class="priority-badge ${priorityClass}">${priorityLabel}</span>
+          <input type="text" class="provider-name-input" value="${escapeHtml(prov.name)}" placeholder="Provider Name" title="Edit provider name">
+        </div>
+        <div class="provider-actions">
+          <button type="button" class="btn-icon-tiny btn-move-up" data-idx="${idx}" title="Move Up (Increase Priority)" ${isPrimary ? 'disabled' : ''}>▲</button>
+          <button type="button" class="btn-icon-tiny btn-move-down" data-idx="${idx}" title="Move Down (Decrease Priority)" ${idx === translationProviders.length - 1 ? 'disabled' : ''}>▼</button>
+          <button type="button" class="btn-icon-tiny danger btn-delete-provider" data-idx="${idx}" title="Remove this provider" ${translationProviders.length <= 1 ? 'disabled' : ''}>🗑️</button>
+        </div>
+      </div>
+
+      <div class="settings-grid-2col">
+        <div class="input-group">
+          <label>API Base URL (or /chat/completions)</label>
+          <input type="url" class="styled-input provider-baseurl-input" value="${escapeHtml(prov.baseUrl)}" placeholder="https://api.groq.com/openai/v1">
+        </div>
+        <div class="input-group">
+          <label>Model Name</label>
+          <input type="text" class="styled-input provider-model-input" value="${escapeHtml(prov.model)}" placeholder="e.g. qwen/qwen3.8-27b or Top-Tools-Ai">
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label>API Key</label>
+        <div class="password-input-wrap">
+          <input type="password" class="styled-input provider-apikey-input" value="${escapeHtml(prov.apiKey || '')}" placeholder="API key (gsk_..., sk-..., etc.)">
+          <button type="button" class="btn-toggle-eye btn-toggle-prov-eye" title="Show/Hide Key">👁️</button>
+        </div>
+      </div>
+
+      <div class="provider-card-footer">
+        <button type="button" class="btn btn-secondary btn-sm btn-test-prov" data-id="${prov.id}">
+          🧪 Test Connection
+        </button>
+        <div class="provider-test-status hidden" id="status_${prov.id}"></div>
+      </div>
+    `;
+
+    // Event bindings inside this card
+    const nameInput = card.querySelector('.provider-name-input');
+    const baseInput = card.querySelector('.provider-baseurl-input');
+    const modelInput = card.querySelector('.provider-model-input');
+    const keyInput = card.querySelector('.provider-apikey-input');
+    const eyeBtn = card.querySelector('.btn-toggle-prov-eye');
+    const testBtn = card.querySelector('.btn-test-prov');
+    const statusDiv = card.querySelector(`#status_${prov.id}`);
+
+    nameInput.addEventListener('input', (e) => { prov.name = e.target.value.trim(); });
+    baseInput.addEventListener('input', (e) => { prov.baseUrl = e.target.value.trim(); });
+    modelInput.addEventListener('input', (e) => { prov.model = e.target.value.trim(); });
+    keyInput.addEventListener('input', (e) => { prov.apiKey = e.target.value.trim(); });
+
+    eyeBtn.addEventListener('click', () => {
+      const isPass = keyInput.type === 'password';
+      keyInput.type = isPass ? 'text' : 'password';
+      eyeBtn.textContent = isPass ? '🙈' : '👁️';
     });
-  }
 
-  // Preset: Clear
-  if (presetClearCustomBtn) {
-    presetClearCustomBtn.addEventListener('click', () => {
-      if (customApiKeyInput) customApiKeyInput.value = '';
-      customEndpointInput.value = '';
-      customModelInput.value = '';
-      settingsMessage.textContent = 'Cleared custom translation endpoint. Will use default built-in translator.';
-      settingsMessage.className = 'settings-msg success';
-      settingsMessage.classList.remove('hidden');
-    });
-  }
-
-  // Test Custom Connection Button
-  if (testCustomApiBtn) {
-    testCustomApiBtn.addEventListener('click', async () => {
-      const endpoint = customEndpointInput.value.trim();
-      const model = customModelInput.value.trim() || 'Top-Tools-Ai';
-      const apiKey = customApiKeyInput ? customApiKeyInput.value.trim() : '';
-
-      if (!endpoint) {
-        settingsMessage.textContent = 'Please enter a custom translation API URL.';
-        settingsMessage.className = 'settings-msg error';
-        settingsMessage.classList.remove('hidden');
-        return;
-      }
+    testBtn.addEventListener('click', async () => {
+      const endpoint = prov.baseUrl;
+      const model = prov.model;
+      const apiKey = prov.apiKey;
 
       if (!apiKey) {
-        settingsMessage.textContent = 'Please enter your Custom API Key (from top-tools-ai.com) to test.';
-        settingsMessage.className = 'settings-msg error';
-        settingsMessage.classList.remove('hidden');
+        statusDiv.className = 'provider-test-status error';
+        statusDiv.textContent = '❌ Please enter an API key to test.';
+        statusDiv.classList.remove('hidden');
         return;
       }
 
-      settingsMessage.textContent = `⏳ Testing connection to ${endpoint} (${model})...`;
-      settingsMessage.className = 'settings-msg';
-      settingsMessage.classList.remove('hidden');
-      testCustomApiBtn.disabled = true;
+      statusDiv.className = 'provider-test-status testing';
+      statusDiv.textContent = `Testing ${model}...`;
+      statusDiv.classList.remove('hidden');
+      testBtn.disabled = true;
 
       try {
         const res = await fetch('/api/test-custom-api', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ endpoint, model, apiKey })
+          body: JSON.stringify({ endpoint, model, apiKey, providerId: prov.id })
         });
         const data = await res.json();
         if (res.ok && data.success) {
-          settingsMessage.innerHTML = `✅ <strong>Connected successfully!</strong><br>Model: <code>${data.model}</code><br>Test Translation: <em>"${data.reply}"</em>`;
-          settingsMessage.className = 'settings-msg success';
+          statusDiv.className = 'provider-test-status success';
+          statusDiv.innerHTML = `✅ <strong>Connected!</strong> Reply: <em>"${escapeHtml(data.reply)}"</em>`;
         } else {
-          settingsMessage.textContent = `❌ Test failed: ${data.error || 'Unknown error'}`;
-          settingsMessage.className = 'settings-msg error';
+          statusDiv.className = 'provider-test-status error';
+          statusDiv.textContent = `❌ ${data.error || 'Connection failed'}`;
         }
       } catch (err) {
-        settingsMessage.textContent = `❌ Network error: ${err.message}`;
-        settingsMessage.className = 'settings-msg error';
+        statusDiv.className = 'provider-test-status error';
+        statusDiv.textContent = `❌ Network error: ${err.message}`;
       } finally {
-        testCustomApiBtn.disabled = false;
+        testBtn.disabled = false;
       }
     });
-  }
+
+    // Move Up
+    const moveUpBtn = card.querySelector('.btn-move-up');
+    if (moveUpBtn && !isPrimary) {
+      moveUpBtn.addEventListener('click', () => {
+        const temp = translationProviders[idx];
+        translationProviders[idx] = translationProviders[idx - 1];
+        translationProviders[idx - 1] = temp;
+        renderTranslationProviders();
+      });
+    }
+
+    // Move Down
+    const moveDownBtn = card.querySelector('.btn-move-down');
+    if (moveDownBtn && idx < translationProviders.length - 1) {
+      moveDownBtn.addEventListener('click', () => {
+        const temp = translationProviders[idx];
+        translationProviders[idx] = translationProviders[idx + 1];
+        translationProviders[idx + 1] = temp;
+        renderTranslationProviders();
+      });
+    }
+
+    // Remove
+    const delBtn = card.querySelector('.btn-delete-provider');
+    if (delBtn && translationProviders.length > 1) {
+      delBtn.addEventListener('click', () => {
+        if (confirm(`Remove "${prov.name}" from translation providers?`)) {
+          translationProviders.splice(idx, 1);
+          renderTranslationProviders();
+        }
+      });
+    }
+
+    translationProvidersContainer.appendChild(card);
+  });
 }
 
 function handleFileSelection(file) {
@@ -587,14 +1006,13 @@ async function handleStartPipeline() {
     appendActivityLog(`Hindi script style: ${hindiScript === 'hinglish' ? 'Hinglish (Roman Script)' : 'Devanagari (देवनागरी)'}`, 'system');
   }
 
-  if (customTranslationEndpoint) {
-    formData.append('customTranslationEndpoint', customTranslationEndpoint);
-    formData.append('customTranslationModel', customTranslationModel);
-    if (customTranslationApiKey) {
-      formData.append('customTranslationApiKey', customTranslationApiKey);
-    }
-    appendActivityLog(`Using custom translation endpoint: ${customTranslationEndpoint} (${customTranslationModel || 'Top-Tools-Ai'})`, 'system');
-  }
+  // Append Speech-to-Text & Translation Fallback Chain configurations
+  formData.append('transcriptionConfig', JSON.stringify(transcriptionConfig));
+  formData.append('translationProviders', JSON.stringify(translationProviders));
+
+  const primaryProv = translationProviders[0] || { name: 'Groq LPU', model: 'qwen3.8-27b' };
+  const fallbackProvCount = Math.max(0, translationProviders.length - 1);
+  appendActivityLog(`[Engine Pipeline] Speech-to-Text: ${transcriptionConfig.model} | Translation: ${primaryProv.name} (${fallbackProvCount} fallback${fallbackProvCount === 1 ? '' : 's'})`, 'system');
 
   try {
     const response = await fetch('/api/process', {

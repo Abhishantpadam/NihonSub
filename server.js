@@ -9,9 +9,20 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 
-import { extractOriginalAudio, prepareTranscriptionAudio, getAudioMetadata, splitAudioAtSilence } from './audioExtractor.js';
-import { transcribeAudio, transcribeAudioChunks } from './transcriber.js';
-import { translateSegments, testCustomApiConnection } from './translator.js';
+import {
+  transcribeAudio,
+  transcribeAudioChunks,
+  translateAudioDirect,
+  translateAudioChunksDirect,
+  alignDualChannelSegments,
+  testTranscriptionApiConnection
+} from './transcriber.js';
+import {
+  translateSegments,
+  testCustomApiConnection,
+  generateGlobalContextDossier,
+  normalizeTranslationProviders
+} from './translator.js';
 import { saveSubtitles, generateBilingualSegments, parseVttToSegments } from './subtitleGenerator.js';
 
 dotenv.config();
@@ -52,48 +63,141 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// In-memory configuration store initialized from environment
+let serverConfig = {
+  transcription: {
+    baseUrl: process.env.TRANSCRIPTION_BASE_URL || 'https://api.groq.com/openai/v1',
+    model: process.env.TRANSCRIPTION_MODEL || 'whisper-large-v3',
+    apiKey: process.env.TRANSCRIPTION_API_KEY || process.env.GROQ_API_KEY || ''
+  },
+  translationProviders: [
+    {
+      id: 'prov_groq',
+      name: 'Groq LPU (Qwen 3.8)',
+      baseUrl: 'https://api.groq.com/openai/v1',
+      model: process.env.TRANSLATION_MODEL || 'qwen/qwen3.8-27b',
+      apiKey: process.env.GROQ_API_KEY || ''
+    },
+    ...(process.env.CUSTOM_TRANSLATION_API_KEY ? [{
+      id: 'prov_toptools',
+      name: 'top-tools-ai.com',
+      baseUrl: process.env.CUSTOM_TRANSLATION_ENDPOINT || 'https://top-tools-ai.com/api/v1',
+      model: process.env.CUSTOM_TRANSLATION_MODEL || 'Top-Tools-Ai',
+      apiKey: process.env.CUSTOM_TRANSLATION_API_KEY
+    }] : []),
+    ...(process.env.OPENROUTER_API_KEY ? [{
+      id: 'prov_openrouter',
+      name: 'OpenRouter (DeepSeek)',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'deepseek/deepseek-chat',
+      apiKey: process.env.OPENROUTER_API_KEY
+    }] : [])
+  ]
+};
+
 /**
- * GET /api/config: Check API key status
+ * GET /api/config: Check API key status & full multi-provider configuration
  */
 app.get('/api/config', (req, res) => {
+  const tKey = serverConfig.transcription.apiKey || process.env.GROQ_API_KEY || '';
+  const maskedTKey = tKey.length > 8
+    ? `${tKey.substring(0, 6)}...${tKey.substring(tKey.length - 4)}`
+    : (tKey ? '••••••••' : '');
+
+  const safeProviders = serverConfig.translationProviders.map(p => ({
+    id: p.id,
+    name: p.name,
+    baseUrl: p.baseUrl,
+    model: p.model,
+    hasKey: Boolean(p.apiKey && p.apiKey.trim().length > 3),
+    maskedKey: (p.apiKey && p.apiKey.length > 8)
+      ? `${p.apiKey.substring(0, 6)}...${p.apiKey.substring(p.apiKey.length - 4)}`
+      : (p.apiKey ? '••••••••' : '')
+  }));
+
   const groqKey = process.env.GROQ_API_KEY || '';
-  const orKey = process.env.OPENROUTER_API_KEY || '';
-  const customKey = process.env.CUSTOM_TRANSLATION_API_KEY || '';
-  const isGroqConfigured = groqKey.length > 10;
-  const isOrConfigured = orKey.length > 10;
-  const isCustomConfigured = customKey.length > 5;
-
-  const maskedGroq = isGroqConfigured
-    ? `${groqKey.substring(0, 6)}...${groqKey.substring(groqKey.length - 4)}`
-    : 'Not configured';
-
-  const maskedCustom = isCustomConfigured
-    ? `${customKey.substring(0, 5)}...${customKey.substring(customKey.length - 4)}`
-    : 'Not configured';
+  const isGroqConfigured = groqKey.length > 10 || Boolean(tKey);
 
   res.json({
+    transcription: {
+      baseUrl: serverConfig.transcription.baseUrl,
+      model: serverConfig.transcription.model,
+      configured: isGroqConfigured,
+      maskedKey: maskedTKey
+    },
+    translationProviders: safeProviders,
     groqConfigured: isGroqConfigured,
-    openRouterConfigured: isOrConfigured,
-    customConfigured: isCustomConfigured,
-    maskedKey: maskedGroq,
-    maskedCustomKey: maskedCustom,
+    openRouterConfigured: Boolean(process.env.OPENROUTER_API_KEY),
+    customConfigured: Boolean(process.env.CUSTOM_TRANSLATION_API_KEY),
+    maskedKey: maskedTKey,
+    maskedCustomKey: safeProviders.find(p => p.id === 'prov_toptools')?.maskedKey || '',
     customEndpoint: process.env.CUSTOM_TRANSLATION_ENDPOINT || '',
     customModel: process.env.CUSTOM_TRANSLATION_MODEL || ''
   });
 });
 
 /**
- * POST /api/config: Update API keys dynamically
+ * POST /api/config: Update API keys and multi-provider settings dynamically
  */
 app.post('/api/config', (req, res) => {
-  const { groqApiKey, openRouterApiKey, customApiKey, customEndpoint, customModel } = req.body;
-  if (groqApiKey && groqApiKey.trim().length > 10) {
-    process.env.GROQ_API_KEY = groqApiKey.trim();
+  const {
+    transcription,
+    translationProviders,
+    groqApiKey,
+    openRouterApiKey,
+    customApiKey,
+    customEndpoint,
+    customModel
+  } = req.body;
+
+  // 1. Update transcription config
+  if (transcription) {
+    if (transcription.baseUrl && transcription.baseUrl.trim()) {
+      serverConfig.transcription.baseUrl = transcription.baseUrl.trim();
+      process.env.TRANSCRIPTION_BASE_URL = serverConfig.transcription.baseUrl;
+    }
+    if (transcription.model && transcription.model.trim()) {
+      serverConfig.transcription.model = transcription.model.trim();
+      process.env.TRANSCRIPTION_MODEL = serverConfig.transcription.model;
+    }
+    if (transcription.apiKey && transcription.apiKey.trim() && !transcription.apiKey.includes('...')) {
+      serverConfig.transcription.apiKey = transcription.apiKey.trim();
+      process.env.TRANSCRIPTION_API_KEY = serverConfig.transcription.apiKey;
+      process.env.GROQ_API_KEY = serverConfig.transcription.apiKey;
+    }
   }
-  if (openRouterApiKey && openRouterApiKey.trim().length > 10) {
+
+  // 2. Update translation providers array
+  if (Array.isArray(translationProviders) && translationProviders.length > 0) {
+    const updated = [];
+    translationProviders.forEach((incoming, idx) => {
+      // Find existing provider to preserve key if masked
+      const existing = serverConfig.translationProviders.find(p => p.id === incoming.id) || {};
+      let finalKey = (incoming.apiKey && incoming.apiKey.trim()) || '';
+      if (!finalKey || finalKey.includes('...') || finalKey === '••••••••') {
+        finalKey = existing.apiKey || '';
+      }
+
+      updated.push({
+        id: incoming.id || `prov_${idx + 1}`,
+        name: incoming.name || `Provider #${idx + 1}`,
+        baseUrl: (incoming.baseUrl && incoming.baseUrl.trim()) || 'https://api.groq.com/openai/v1',
+        model: (incoming.model && incoming.model.trim()) || 'qwen/qwen3.8-27b',
+        apiKey: finalKey
+      });
+    });
+    serverConfig.translationProviders = updated;
+  }
+
+  // 3. Backward compatibility updates
+  if (groqApiKey && groqApiKey.trim().length > 10 && !groqApiKey.includes('...')) {
+    process.env.GROQ_API_KEY = groqApiKey.trim();
+    serverConfig.transcription.apiKey = groqApiKey.trim();
+  }
+  if (openRouterApiKey && openRouterApiKey.trim().length > 10 && !openRouterApiKey.includes('...')) {
     process.env.OPENROUTER_API_KEY = openRouterApiKey.trim();
   }
-  if (customApiKey && customApiKey.trim().length > 3) {
+  if (customApiKey && customApiKey.trim().length > 3 && !customApiKey.includes('...')) {
     process.env.CUSTOM_TRANSLATION_API_KEY = customApiKey.trim();
   }
   if (customEndpoint && customEndpoint.trim()) {
@@ -102,17 +206,53 @@ app.post('/api/config', (req, res) => {
   if (customModel && customModel.trim()) {
     process.env.CUSTOM_TRANSLATION_MODEL = customModel.trim();
   }
+
   return res.json({ success: true, message: 'Settings updated successfully.' });
 });
 
 /**
- * POST /api/test-custom-api: Test connection to custom OpenAI-compatible API (e.g. top-tools-ai.com)
+ * POST /api/test-transcription-api: Test connection to speech-to-text / Whisper API
+ */
+app.post('/api/test-transcription-api', async (req, res) => {
+  const { baseUrl, model, apiKey } = req.body;
+  let effectiveKey = (apiKey && apiKey.trim()) || '';
+  if (!effectiveKey || effectiveKey.includes('...')) {
+    effectiveKey = serverConfig.transcription.apiKey || process.env.GROQ_API_KEY || '';
+  }
+  const effectiveBase = baseUrl || serverConfig.transcription.baseUrl || 'https://api.groq.com/openai/v1';
+  const effectiveModel = model || serverConfig.transcription.model || 'whisper-large-v3';
+
+  if (!effectiveKey) {
+    return res.status(400).json({ error: 'Please provide an API key to test transcription.' });
+  }
+
+  try {
+    const result = await testTranscriptionApiConnection(effectiveBase, effectiveModel, effectiveKey);
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Transcription test failed.' });
+  }
+});
+
+/**
+ * POST /api/test-custom-api: Test connection to any translation provider (OpenAI-compatible)
  */
 app.post('/api/test-custom-api', async (req, res) => {
-  const { endpoint, model, apiKey } = req.body;
-  const effectiveEndpoint = endpoint || process.env.CUSTOM_TRANSLATION_ENDPOINT || 'https://top-tools-ai.com/api/v1';
-  const effectiveModel = model || process.env.CUSTOM_TRANSLATION_MODEL || 'Top-Tools-Ai';
-  const effectiveKey = apiKey || process.env.CUSTOM_TRANSLATION_API_KEY || '';
+  const { endpoint, baseUrl, model, apiKey, providerId } = req.body;
+  const effectiveEndpoint = endpoint || baseUrl || 'https://top-tools-ai.com/api/v1';
+  const effectiveModel = model || 'Top-Tools-Ai';
+
+  let effectiveKey = (apiKey && apiKey.trim()) || '';
+  if (!effectiveKey || effectiveKey.includes('...')) {
+    // Look up provider in serverConfig if providerId passed
+    if (providerId) {
+      const match = serverConfig.translationProviders.find(p => p.id === providerId);
+      if (match) effectiveKey = match.apiKey;
+    }
+    if (!effectiveKey) {
+      effectiveKey = process.env.CUSTOM_TRANSLATION_API_KEY || process.env.GROQ_API_KEY || '';
+    }
+  }
 
   if (!effectiveKey) {
     return res.status(400).json({ error: 'Please provide an API key to test.' });
@@ -122,15 +262,15 @@ app.post('/api/test-custom-api', async (req, res) => {
     const result = await testCustomApiConnection(effectiveEndpoint, effectiveModel, effectiveKey);
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Custom API test failed.' });
+    return res.status(500).json({ error: err.message || 'Translation provider test failed.' });
   }
 });
 
 /**
- * POST /api/retranslate: Fast re-translation of existing subtitles using Custom API (e.g. top-tools-ai.com)
+ * POST /api/retranslate: Fast re-translation of existing subtitles using multi-provider fallback
  */
 app.post('/api/retranslate', async (req, res) => {
-  const { jobId, targetLang, hindiScript, customEndpoint, customModel, customApiKey } = req.body;
+  const { jobId, targetLang, hindiScript, translationProviders, customEndpoint, customModel, customApiKey } = req.body;
   if (!jobId) {
     return res.status(400).json({ error: 'Job ID is required.' });
   }
@@ -147,25 +287,48 @@ app.post('/api/retranslate', async (req, res) => {
       return res.status(400).json({ error: 'No segments found in Japanese subtitles.' });
     }
 
-    const groqKey = process.env.GROQ_API_KEY;
-    const openRouterKey = process.env.OPENROUTER_API_KEY || '';
+    let activeProviders = [];
+    if (Array.isArray(translationProviders) && translationProviders.length > 0) {
+      activeProviders = translationProviders.map(incoming => {
+        const existing = serverConfig.translationProviders.find(p => p.id === incoming.id) || {};
+        const key = (incoming.apiKey && incoming.apiKey.trim() && !incoming.apiKey.includes('...'))
+          ? incoming.apiKey.trim()
+          : existing.apiKey;
+        return { ...incoming, apiKey: key };
+      }).filter(p => p.apiKey && p.apiKey.trim());
+    }
+
+    if (!activeProviders || activeProviders.length === 0) {
+      activeProviders = normalizeTranslationProviders(
+        serverConfig.translationProviders,
+        process.env.OPENROUTER_API_KEY,
+        customEndpoint || process.env.CUSTOM_TRANSLATION_ENDPOINT,
+        customModel || process.env.CUSTOM_TRANSLATION_MODEL,
+        customApiKey || process.env.CUSTOM_TRANSLATION_API_KEY
+      );
+    }
+
     const chosenLang = targetLang || 'en';
-    const effectiveEndpoint = customEndpoint || process.env.CUSTOM_TRANSLATION_ENDPOINT;
-    const effectiveModel = customModel || process.env.CUSTOM_TRANSLATION_MODEL || 'Top-Tools-Ai';
-    const effectiveCustomKey = customApiKey || process.env.CUSTOM_TRANSLATION_API_KEY;
     const resultSubtitles = {};
+
+    // Pass 1: Global Context Dossier for re-translation
+    const globalDossier = await generateGlobalContextDossier(
+      jaSegments,
+      activeProviders
+    );
 
     if (chosenLang === 'en' || chosenLang === 'both') {
       const enSegments = await translateSegments(
         jaSegments,
         'en',
-        groqKey,
-        openRouterKey,
+        activeProviders,
         null,
-        effectiveEndpoint,
-        effectiveModel,
+        null,
+        null,
+        null,
         'devanagari',
-        effectiveCustomKey
+        null,
+        globalDossier
       );
       const enSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'en', enSegments);
       resultSubtitles.en = {
@@ -189,13 +352,14 @@ app.post('/api/retranslate', async (req, res) => {
       const hiSegments = await translateSegments(
         jaSegments,
         'hi',
-        groqKey,
-        openRouterKey,
+        activeProviders,
         null,
-        effectiveEndpoint,
-        effectiveModel,
+        null,
+        null,
+        null,
         script,
-        effectiveCustomKey
+        null,
+        globalDossier
       );
       const hiSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'hi', hiSegments);
       resultSubtitles.hi = {
@@ -486,16 +650,66 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
     return res.end();
   }
 
-  const groqKey = (req.body.customGroqKey && req.body.customGroqKey.trim()) || (req.body.customApiKey && req.body.customApiKey.trim()) || process.env.GROQ_API_KEY;
-  const openRouterKey = process.env.OPENROUTER_API_KEY || '';
-  const customTranslationApiKey = (req.body.customTranslationApiKey && req.body.customTranslationApiKey.trim()) || process.env.CUSTOM_TRANSLATION_API_KEY || '';
+  // Parse Transcription Configuration (Speech-to-Text)
+  let transcriptionConfig = null;
+  if (req.body.transcriptionConfig) {
+    try {
+      transcriptionConfig = typeof req.body.transcriptionConfig === 'string'
+        ? JSON.parse(req.body.transcriptionConfig)
+        : req.body.transcriptionConfig;
+    } catch (e) {}
+  }
 
-  if (!groqKey) {
+  const transcriptionBaseUrl = (transcriptionConfig?.baseUrl && transcriptionConfig.baseUrl.trim())
+    || serverConfig.transcription.baseUrl
+    || 'https://api.groq.com/openai/v1';
+  const transcriptionModel = (transcriptionConfig?.model && transcriptionConfig.model.trim())
+    || serverConfig.transcription.model
+    || 'whisper-large-v3';
+  let transcriptionApiKey = (transcriptionConfig?.apiKey && transcriptionConfig.apiKey.trim() && !transcriptionConfig.apiKey.includes('...'))
+    ? transcriptionConfig.apiKey.trim()
+    : (serverConfig.transcription.apiKey || process.env.GROQ_API_KEY || '');
+
+  if (!transcriptionApiKey) {
     sendEvent({
       type: 'error',
-      error: 'Groq API key is missing. Please set it in .env or the Settings panel.'
+      error: 'Transcription API key is missing. Please configure it in the Settings panel.'
     });
     return res.end();
+  }
+
+  const transcriptionOptions = {
+    baseUrl: transcriptionBaseUrl,
+    model: transcriptionModel
+  };
+
+  // Parse Translation Providers (Fallback Chain)
+  let activeProviders = [];
+  if (req.body.translationProviders) {
+    try {
+      const incoming = typeof req.body.translationProviders === 'string'
+        ? JSON.parse(req.body.translationProviders)
+        : req.body.translationProviders;
+      if (Array.isArray(incoming) && incoming.length > 0) {
+        activeProviders = incoming.map(prov => {
+          const existing = serverConfig.translationProviders.find(p => p.id === prov.id) || {};
+          const key = (prov.apiKey && prov.apiKey.trim() && !prov.apiKey.includes('...'))
+            ? prov.apiKey.trim()
+            : existing.apiKey;
+          return { ...prov, apiKey: key };
+        }).filter(p => p.apiKey && p.apiKey.trim());
+      }
+    } catch (e) {}
+  }
+
+  if (!activeProviders || activeProviders.length === 0) {
+    activeProviders = normalizeTranslationProviders(
+      serverConfig.translationProviders,
+      process.env.OPENROUTER_API_KEY,
+      req.body.customTranslationEndpoint || process.env.CUSTOM_TRANSLATION_ENDPOINT,
+      req.body.customTranslationModel || process.env.CUSTOM_TRANSLATION_MODEL,
+      req.body.customTranslationApiKey || process.env.CUSTOM_TRANSLATION_API_KEY
+    );
   }
 
   const targetLang = req.body.targetLang || 'en'; // 'en', 'hi', or 'both'
@@ -520,12 +734,12 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
     });
     const audioPath = await prepareTranscriptionAudio(videoPath, AUDIO_DIR, jobId);
 
-    // 2. Transcribe Japanese Audio with Vocalization Capture & Silence Chunking
+    // 2. Transcribe Japanese Audio & Extract Acoustic Speech Translation (Dual-Channel)
     sendEvent({
       type: 'progress',
       step: 'transcribe',
       percent: 40,
-      message: 'Transcribing Japanese dialogue & vocalizations with Whisper Large-v3...'
+      message: `Dual-Channel AI: Extracting Japanese transcript via ${transcriptionModel} + direct acoustic translation...`
     });
 
     const audioStat = fs.statSync(audioPath);
@@ -550,23 +764,36 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
         type: 'progress',
         step: 'transcribe',
         percent: 50,
-        message: `Split into ${chunks.length} seamless chunks at natural silence pauses. Transcribing in sequence...`
+        message: `Split into ${chunks.length} seamless chunks. Running parallel dual-channel transcription & acoustic translation...`
       });
 
-      const chunkResult = await transcribeAudioChunks(chunks, groqKey, (curr, tot) => {
-        sendEvent({
-          type: 'progress',
-          step: 'transcribe',
-          percent: 50 + Math.round((curr / tot) * 10),
-          message: `Transcribing chunk ${curr} of ${tot}...`
-        });
-      });
+      const [chunkResult, audioChunkResult] = await Promise.all([
+        transcribeAudioChunks(chunks, transcriptionApiKey, (curr, tot) => {
+          sendEvent({
+            type: 'progress',
+            step: 'transcribe',
+            percent: 50 + Math.round((curr / tot) * 10),
+            message: `Dual-Channel: Processing chunk ${curr} of ${tot}...`
+          });
+        }, transcriptionOptions),
+        translateAudioChunksDirect(chunks, transcriptionApiKey, null, transcriptionOptions).catch(e => {
+          console.warn('[Audio Direct Chunk Translation Non-fatal]:', e.message);
+          return { segments: [], fullText: '' };
+        })
+      ]);
 
-      jaSegments = chunkResult.segments;
+      jaSegments = alignDualChannelSegments(chunkResult.segments, audioChunkResult.segments);
       duration = chunkResult.duration;
     } else {
-      const transcription = await transcribeAudio(audioPath, groqKey);
-      jaSegments = transcription.segments;
+      const [transcription, audioTranslationResult] = await Promise.all([
+        transcribeAudio(audioPath, transcriptionApiKey, transcriptionOptions),
+        translateAudioDirect(audioPath, transcriptionApiKey, transcriptionOptions).catch(e => {
+          console.warn('[Audio Direct Translation Non-fatal]:', e.message);
+          return { segments: [], fullText: '' };
+        })
+      ]);
+
+      jaSegments = alignDualChannelSegments(transcription.segments, audioTranslationResult.segments);
       duration = transcription.duration || 0;
     }
 
@@ -580,7 +807,7 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
       type: 'progress',
       step: 'transcribe_done',
       percent: 60,
-      message: `✅ Transcribed ${jaSegments.length} Japanese dialogue segments (${durationMin} mins of audio)`,
+      message: `✅ Dual-Channel aligned! Captured ${jaSegments.length} Japanese dialogue segments (${durationMin} mins of audio)`,
       segmentsCount: jaSegments.length,
       durationMinutes: durationMin
     });
@@ -596,18 +823,40 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
       }
     };
 
-    // 3. Translation
-    const customEndpoint = req.body.customTranslationEndpoint || process.env.CUSTOM_TRANSLATION_ENDPOINT || '';
-    const customModel = req.body.customTranslationModel || process.env.CUSTOM_TRANSLATION_MODEL || '';
+    // 3. Translation: Pass 1 Global Dossier & Pass 2 Context-Conditioned Synthesis
+    const primaryProvName = activeProviders[0]?.name || 'Primary AI';
+    const fallbackCount = Math.max(0, activeProviders.length - 1);
+    const chainDesc = fallbackCount > 0 ? `${primaryProvName} (+${fallbackCount} fallback)` : primaryProvName;
+
+    sendEvent({
+      type: 'progress',
+      step: 'translate',
+      percent: 62,
+      message: `🧠 Pass 1: Constructing Global Scene & Character Dossier using ${chainDesc}...`
+    });
+
+    const globalDossier = await generateGlobalContextDossier(
+      jaSegments,
+      activeProviders
+    );
+
+    if (globalDossier) {
+      sendEvent({
+        type: 'progress',
+        step: 'translate',
+        percent: 64,
+        message: '✅ Global Context Dossier created! Starting multi-model contextual translation...'
+      });
+    }
 
     sendEvent({
       type: 'progress',
       step: 'translate',
       percent: 65,
-      message: `Beginning contextual translation to ${targetLang.toUpperCase()}...`
+      message: `Beginning contextual translation to ${targetLang.toUpperCase()} via ${chainDesc}...`
     });
 
-    // English Translation (Two-Step Contextual LLM Pipeline)
+    // English Translation
     if (targetLang === 'en' || targetLang === 'both') {
       sendEvent({
         type: 'progress',
@@ -619,8 +868,8 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
       const enSegments = await translateSegments(
         jaSegments,
         'en',
-        groqKey,
-        openRouterKey,
+        activeProviders,
+        null,
         (prog) => {
           sendEvent({
             type: 'progress',
@@ -629,10 +878,11 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
             message: `[English] ${prog.status}`
           });
         },
-        customEndpoint,
-        customModel,
+        null,
+        null,
         'devanagari',
-        customTranslationApiKey
+        null,
+        globalDossier
       );
 
       const enSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'en', enSegments);
@@ -669,8 +919,8 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
       const hiSegments = await translateSegments(
         jaSegments,
         'hi',
-        groqKey,
-        openRouterKey,
+        activeProviders,
+        null,
         (prog) => {
           sendEvent({
             type: 'progress',
@@ -679,10 +929,11 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
             message: `[${hindiScript === 'hinglish' ? 'Hinglish' : 'Hindi'}] ${prog.status}`
           });
         },
-        customEndpoint,
-        customModel,
+        null,
+        null,
         hindiScript,
-        customTranslationApiKey
+        null,
+        globalDossier
       );
 
       const hiSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'hi', hiSegments);

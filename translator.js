@@ -5,35 +5,223 @@ const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 /**
+ * Normalizes translation providers from either an array or legacy parameters.
+ * Returns an ordered array of provider objects: [{ id, name, baseUrl, model, apiKey }]
+ */
+export function normalizeTranslationProviders(providersOrKey, openRouterKey, customEndpoint, customModel, customApiKey) {
+  if (Array.isArray(providersOrKey) && providersOrKey.length > 0) {
+    return providersOrKey
+      .filter(p => p && p.apiKey && p.apiKey.trim())
+      .map((p, idx) => ({
+        id: p.id || `prov_${idx + 1}`,
+        name: p.name || `Provider #${idx + 1}`,
+        baseUrl: (p.baseUrl && p.baseUrl.trim()) || 'https://api.groq.com/openai/v1',
+        model: (p.model && p.model.trim()) || 'qwen/qwen3.8-27b',
+        apiKey: p.apiKey.trim()
+      }));
+  }
+
+  const list = [];
+  // 1. If customEndpoint & customApiKey provided (e.g. top-tools-ai.com)
+  if (customApiKey && customApiKey.trim()) {
+    list.push({
+      id: 'custom',
+      name: 'Custom Provider (top-tools-ai / Custom)',
+      baseUrl: (customEndpoint && customEndpoint.trim()) || 'https://top-tools-ai.com/api/v1',
+      model: (customModel && customModel.trim()) || 'Top-Tools-Ai',
+      apiKey: customApiKey.trim()
+    });
+  }
+
+  // 2. Groq primary
+  const groqKey = typeof providersOrKey === 'string' ? providersOrKey : (process.env.GROQ_API_KEY || '');
+  if (groqKey && groqKey.trim()) {
+    list.push({
+      id: 'groq',
+      name: 'Groq LPU (Qwen 3.8)',
+      baseUrl: 'https://api.groq.com/openai/v1',
+      model: process.env.TRANSLATION_MODEL || 'qwen/qwen3.8-27b',
+      apiKey: groqKey.trim()
+    });
+  }
+
+  // 3. OpenRouter fallback
+  const orKey = openRouterKey || process.env.OPENROUTER_API_KEY || '';
+  if (orKey && orKey.trim()) {
+    list.push({
+      id: 'openrouter',
+      name: 'OpenRouter (DeepSeek)',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'deepseek/deepseek-chat',
+      apiKey: orKey.trim()
+    });
+  }
+
+  return list;
+}
+
+/**
+ * Pass 1: Generates a Global Narrative & Character Dossier from the full episode transcript
+ * and acoustic audio translations before line-by-line translation starts.
+ * Tries providers in priority sequence with automatic fallback.
+ */
+export async function generateGlobalContextDossier(
+  segments,
+  providersOrKey,
+  openRouterKey,
+  customEndpoint,
+  customModel,
+  customApiKey
+) {
+  if (!segments || segments.length === 0) {
+    return null;
+  }
+
+  const providers = normalizeTranslationProviders(
+    providersOrKey,
+    openRouterKey,
+    customEndpoint,
+    customModel,
+    customApiKey
+  );
+
+  if (providers.length === 0) {
+    return null;
+  }
+
+  // Sample up to 60 segments across the video to capture premise, characters, and progression
+  const sampled = segments.length <= 60
+    ? segments
+    : [
+        ...segments.slice(0, 30),
+        ...segments.slice(Math.floor(segments.length / 2) - 10, Math.floor(segments.length / 2) + 10),
+        ...segments.slice(-10)
+      ];
+
+  const dialogueSample = sampled.map(s => {
+    let line = `[${s.start.toFixed(1)}s] JP: "${s.text}"`;
+    if (s.acousticAudioTranslation) {
+      line += ` | Audio EN: "${s.acousticAudioTranslation}"`;
+    }
+    return line;
+  }).join('\n');
+
+  const systemPrompt = `You are a world-class anime localization director and narrative dramaturg.
+Analyze this raw dialogue stream (Japanese transcription + direct acoustic audio translation) and produce a concise, authoritative SCENE & CHARACTER DOSSIER to guide subtitle translation.
+
+Extract:
+1. SCENE PREMISE & SETTING (1-2 sentences on what is occurring).
+2. CHARACTER IDENTIFICATION & SOCIAL HIERARCHY:
+   - Identify distinct speakers (names, gender hints, age/vibe).
+   - Who is in charge / dominant / aggressive / rude?
+   - Who is polite / submissive / respectful / casual?
+   - Explicit pronoun/speech markers observed (e.g. ore vs watashi, omae vs anata, -zo/-ze vs -desu/-masu).
+3. KEY THEMATIC TERMINOLOGY & JARGON (Crucial recurring proper nouns, terms, or motifs).
+4. EMOTIONAL ARC & TONE (e.g. "Tense standoff transitioning to comedic relief", "Quiet melancholic confession").
+
+Format as a concise, structured bulleted brief (under 180 words).`;
+
+  for (let idx = 0; idx < providers.length; idx++) {
+    const provider = providers[idx];
+    try {
+      let endpointUrl = provider.baseUrl.replace(/\/+$/, '');
+      if (!endpointUrl.endsWith('/chat/completions')) {
+        endpointUrl += '/chat/completions';
+      }
+
+      const res = await fetch(endpointUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${provider.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: provider.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: dialogueSample }
+          ],
+          temperature: 0.2
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        let content = data.choices?.[0]?.message?.content || data.text || '';
+        if (content) {
+          content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+          return content;
+        }
+      } else {
+        const errText = await res.text().catch(() => '');
+        console.warn(`[Dossier] Provider #${idx + 1} (${provider.name}) failed (${res.status}): ${errText}`);
+      }
+    } catch (err) {
+      console.warn(`[Dossier] Provider #${idx + 1} (${provider.name}) error: ${err.message}`);
+    }
+  }
+
+  return null;
+}
+
+/**
  * Translates Japanese subtitle segments into English or Hindi while preserving
  * emotional vocalizations, grunts, moans, sighs, humming, and exact timestamps.
- *
- * @param {Array<{ id: number, start: number, end: number, text: string }>} segments
- * @param {'en' | 'hi'} targetLang - 'en' for English, 'hi' for Hindi
- * @param {string} apiKey - Groq API Key
- * @param {string} [openRouterKey] - Optional OpenRouter API Key for fallback
- * @param {Function} [onProgress] - Callback for real-time progress updates
- * @returns {Promise<Array<{ id: number, start: number, end: number, text: string }>>}
+ * Iterates through translation providers with automatic fallback on rate limits or errors.
  */
 export async function translateSegments(
   segments,
   targetLang,
-  apiKey,
+  providersOrKey,
   openRouterKey,
   onProgress,
   customEndpoint,
   customModel,
   scriptOption = 'devanagari',
-  customApiKey = null
+  customApiKey = null,
+  cachedGlobalDossier = null
 ) {
   if (!segments || segments.length === 0) {
     return [];
+  }
+
+  const providers = normalizeTranslationProviders(
+    providersOrKey,
+    openRouterKey,
+    customEndpoint,
+    customModel,
+    customApiKey
+  );
+
+  if (providers.length === 0) {
+    throw new Error('No valid translation providers configured with API keys.');
   }
 
   const isHinglish = targetLang === 'hi' && scriptOption === 'hinglish';
   const langName = targetLang === 'hi'
     ? (isHinglish ? 'Hinglish (Hindi in conversational Roman alphabet script, e.g. "Kya kar rahe ho?", "Sach mein?")' : 'Hindi (हिन्दी in standard Devanagari script)')
     : 'English';
+
+  // Pass 1: Build Global Narrative & Character Dossier if not already cached
+  let globalDossier = cachedGlobalDossier;
+  if (!globalDossier && segments.length > 2) {
+    if (onProgress) {
+      onProgress({
+        lang: targetLang,
+        batch: 0,
+        totalBatches: 1,
+        completedSegments: 0,
+        totalSegments: segments.length,
+        status: `🧠 [Pass 1] Ingesting full audio & transcript to construct Global Scene & Character Dossier...`
+      });
+    }
+
+    globalDossier = await generateGlobalContextDossier(
+      segments,
+      providers
+    );
+  }
+
   const BATCH_SIZE = 25; // Balanced batch size for prompt quality & rate limits
   const totalBatches = Math.ceil(segments.length / BATCH_SIZE);
   const results = [];
@@ -49,21 +237,21 @@ export async function translateSegments(
         totalBatches,
         completedSegments: results.length,
         totalSegments: segments.length,
-        status: `Translating batch ${batchIndex}/${totalBatches} (${chunk.length} segments)...`
+        status: `Translating batch ${batchIndex}/${totalBatches} (${chunk.length} segments with full context awareness)...`
       });
     }
+
+    const previousContext = i > 0 ? segments.slice(Math.max(0, i - 4), i) : [];
 
     const translatedChunk = await translateBatchWithFallback(
       chunk,
       langName,
       targetLang,
-      apiKey,
-      openRouterKey,
+      providers,
       onProgress,
-      customEndpoint,
-      customModel,
       scriptOption,
-      customApiKey
+      previousContext,
+      globalDossier
     );
 
     results.push(...translatedChunk);
@@ -84,21 +272,19 @@ export async function translateSegments(
 }
 
 /**
- * Translates a single batch. If Groq hits a 429 rate limit:
- * 1. Checks if OpenRouter or Custom API is available for instant translation.
- * 2. Or parses wait time from Groq's error, sleeps, and retries.
+ * Translates a single batch using a multi-provider fallback chain:
+ * If Provider #1 hits a 429 rate limit, 5xx, or network failure:
+ * Automatically falls over in real-time to Provider #2, then Provider #3.
  */
 async function translateBatchWithFallback(
   batch,
   langName,
   targetLangCode,
-  groqKey,
-  openRouterKey,
+  providers,
   onProgress,
-  customEndpoint,
-  customModel,
   scriptOption = 'devanagari',
-  customApiKey = null
+  previousContext = [],
+  globalDossier = null
 ) {
   const isHindi = targetLangCode === 'hi';
   const isHinglish = isHindi && scriptOption === 'hinglish';
@@ -117,7 +303,7 @@ Examples:
 * "Kripya meri madad karo."`;
     } else {
       scriptInstruction = `
-SCRIPT REQUIREMENT: MANDATORY STANDARD DEVANAGARI (देवनागरी).
+SCRIPT REQUIREMENT: MANDATORY STANDARD DEVANAGARI (देवナगरी).
 Write in clear, standard Hindi written exclusively in the Devanagari script.
 Examples:
 * "मुझे यह बहुत पसंद है!"
@@ -129,192 +315,150 @@ Examples:
   let vocalizationExamples = '';
   if (isHindi) {
     if (isHinglish) {
-      vocalizationExamples = `* For grunts / strain: "*grunts*", "*karah*", "*karahate hue*", "*uff*"
-   * For moans / pleasure / sighs: "*moans*", "*siskari*", "*aah...*", "*sighs*", "*madhosh aawaaz*"
-   * For panting / breath: "*hanfte hue*", "*heavy breathing*", "*tez saansein*"
-   * For humming / thinking: "*hmm...*", "*gungunate hue*"
-   * For sudden surprises / gasps: "*gasps*", "*arre!*", "*oh!*"`;
+      vocalizationExamples = `
+* Japanese: "あっ…" -> Hinglish: "Ah..." or "Aah..."
+* Japanese: "うっ…" / "くっ…" -> Hinglish: "Ugh..." or "Khh..."
+* Japanese: "ふぅ…" / "はぁ…" -> Hinglish: "Phew..." or "Haa..." (sigh)
+* Japanese: "えっ？" -> Hinglish: "Eh?!" or "Hein?!"
+* Japanese: "うん" -> Hinglish: "Haan" or "Hmm"`;
     } else {
-      vocalizationExamples = `* For grunts / strain: "*कराह*", "*कराहते हुए*", "*उफ़्फ़*"
-   * For moans / pleasure / sighs: "*सिसकारी*", "*आह...*", "*गहरी सांस*", "*मदहोश आवाज*"
-   * For panting / breath: "*हांफते हुए*", "*तेज सांसें*"
-   * For humming / thinking: "*हम्म...*", "*गुनगुनाते हुए*"
-   * For sudden surprises / gasps: "*सांस रुकते हुए*", "*अरे!*", "*ओह!*"`;
+      vocalizationExamples = `
+* Japanese: "あっ…" -> Hindi: "आह..." or "अरे..."
+* Japanese: "うっ…" / "くっ…" -> Hindi: "उफ़्फ़..." or "उह..."
+* Japanese: "ふぅ…" / "はぁ…" -> Hindi: "हूँ..." or "हाह..." (sigh)
+* Japanese: "えっ？" -> Hindi: "एह?!" or "हैं?!"
+* Japanese: "うん" -> Hindi: "हाँ" or "हम्म"`;
     }
   } else {
-    vocalizationExamples = `* For grunts / strain: "*grunts*", "*groans*", "*ugh*"
-   * For moans / pleasure / sighs: "*moans*", "*ah...*", "*sighs*", "*whimpers*"
-   * For panting / breath: "*pant*", "*heavy breathing*", "*huff*"
-   * For humming / thinking: "*humming*", "*hmm...*"
-   * For sudden surprises / gasps: "*gasps*", "*cries out*"`;
+    vocalizationExamples = `
+* Japanese: "あっ…" -> English: "Ah..."
+* Japanese: "うっ…" / "くっ…" -> English: "Ugh..." / "Ghk..."
+* Japanese: "ふぅ…" / "はぁ…" -> English: "Phew..." / "Haa..." (sigh/breathing)
+* Japanese: "えっ？" -> English: "Eh?!" / "What?!"
+* Japanese: "うん" / "ふうん" -> English: "Yeah" / "Hmm" / "Uh-huh"
+* Japanese: "きゃっ！" -> English: "Kyaa!" / "Eek!"`;
   }
 
-  const systemPrompt = `You are a master subtitle translator specializing in Japanese to ${langName}.
-You translate Japanese dialogue and audio with extreme precision, natural conversational flow, and complete emotional fidelity.
+  let contextSnippet = '';
+  if (previousContext.length > 0) {
+    contextSnippet = 'IMMEDIATELY PRECEDING DIALOGUE (for conversational flow only):\n' +
+      previousContext.map(s => `[${s.start.toFixed(1)}s]: "${s.text}"`).join('\n') + '\n\n';
+  }
+
+  let dossierSection = '';
+  if (globalDossier) {
+    dossierSection = `\n=======================================================\nGLOBAL EPISODE CONTEXT & CHARACTER DOSSIER:\n${globalDossier}\nUse this scene hierarchy, speaker relationship context, and tone to inform pronoun choices (e.g. tu vs tum vs aap in Hindi, or casual vs rude vs respectful in English) and ensure consistent terminology.\n=======================================================\n`;
+  }
+
+  const systemPrompt = `You are a professional anime subtitle translator specializing in natural, context-aware Japanese-to-${langName} localization.
+${dossierSection}
+Your mission is to translate subtitle segments from Japanese into ${langName} while strictly adhering to these rules:
+
+1. PRESERVE EVERY EMOTIONAL SOUND, VOCALIZATION, AND BREATH:
+Anime dialogue relies heavily on non-verbal expressions. You must NEVER omit, silence, or ignore:
+- Sighs, gasps, heavy panting, moans, grunts, whimpers, screams, giggles, chuckles, hums, and hesitation sounds.
+- If a segment contains only a sound (e.g., "あっ…", "ふぅ…", "うーん"), translate it into the corresponding natural localized sound:
+${vocalizationExamples}
+
+2. DUAL-CHANNEL AUDIO CONSENSUS:
+Each segment may include "audio_acoustic_translation" (a direct English acoustic interpretation captured directly from the raw audio waveform).
+- Cross-reference the Japanese text with this acoustic translation to resolve homophones, mumbled words, or dropped subjects.
+- Synthesize both channels into the most fluent, punchy subtitle.
+
+3. MAINTAIN SEGMENT INTEGRITY & TIMESTAMPS:
+- You will receive a JSON array of segments, each with an "id", "start", "end", and "japanese_text".
+- You MUST return a JSON array containing the exact same number of items with the exact same "id", "start", and "end".
+- Output field name for the translation must be "text".
+
+4. CONVERSATIONAL TONE & SLANG:
+- Adapt Japanese honorifics, sentence endings (zo, ze, wa, yo, ne), and character quirks into natural spoken dialogue.
 ${scriptInstruction}
 
-CRITICAL INSTRUCTIONS:
-1. Context & Implicit Subjects: Japanese regularly drops subjects (I, you, he, she). Infer the correct context and natural conversational phrasing.
-2. VOCALIZATIONS & SOUND EFFECTS (MANDATORY):
-   Do NOT delete, ignore, or censor non-verbal sounds, grunts, sighing, humming, moaning, breathing, gasps, or pleasing sounds.
-   Translate them faithfully into expressive subtitle sound markers:
-   ${vocalizationExamples}
-3. OUTPUT FORMAT:
-   Return ONLY a valid JSON array of objects with the exact same 'id', 'start', 'end', and the translated 'text'.
-   Example JSON:
-   [
-     { "id": 0, "start": 1.25, "end": 3.40, "text": "Translated text..." }
-   ]
+OUTPUT FORMAT:
+Return ONLY a valid JSON array of objects.
+[
+  { "id": 0, "start": 0.0, "end": 1.5, "text": "Translated subtitle text here" }
+]
 Do NOT enclose the output in markdown codeblocks or add any extra conversational text. Return only the raw JSON array.`;
 
-  const userPrompt = JSON.stringify(
-    batch.map(s => ({ id: s.id, start: s.start, end: s.end, text: s.text }))
+  const userPrompt = `${contextSnippet}JSON SEGMENTS TO TRANSLATE:\n` + JSON.stringify(
+    batch.map(s => {
+      const item = { id: s.id, start: s.start, end: s.end, japanese_text: s.text };
+      if (s.acousticAudioTranslation) {
+        item.audio_acoustic_translation = s.acousticAudioTranslation;
+      }
+      return item;
+    })
   );
 
-  // If user provided a Custom Translation API / Agent endpoint (OpenAI compatible)
-  if (customEndpoint && customEndpoint.trim().startsWith('http')) {
+  let lastError = null;
+
+  for (let pIdx = 0; pIdx < providers.length; pIdx++) {
+    const provider = providers[pIdx];
+    const nextProvider = providers[pIdx + 1];
+
     try {
-      let endpointUrl = customEndpoint.trim();
-      // Auto-append /chat/completions if base URL is provided
-      if (!endpointUrl.endsWith('/chat/completions')) {
-        endpointUrl = endpointUrl.replace(/\/+$/, '') + '/chat/completions';
+      if (onProgress && pIdx > 0) {
+        onProgress({ status: `Routing batch to Provider #${pIdx + 1} (${provider.name} - ${provider.model})...` });
       }
 
-      const modelToUse = (customModel && customModel.trim()) ? customModel.trim() : 'Top-Tools-Ai';
-      const effectiveKey = (customApiKey && customApiKey.trim())
-        || process.env.CUSTOM_TRANSLATION_API_KEY
-        || openRouterKey
-        || groqKey;
-
-      if (onProgress) onProgress({ status: `Routing batch to Custom API (${modelToUse} @ ${endpointUrl})...` });
-      
-      const customResponse = await fetch(endpointUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${effectiveKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: modelToUse,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: 0.2
-        })
-      });
-
-      if (customResponse.ok) {
-        const cData = await customResponse.json();
-        const content = cData.choices?.[0]?.message?.content || cData.text;
-        const parsed = parseTranslatedContent(content, batch);
-        if (parsed && parsed.length > 0) {
-          return parsed;
-        }
-      } else {
-        const errText = await customResponse.text().catch(() => '');
-        console.warn(`[Custom API Error ${customResponse.status}]: ${errText}`);
-        if (onProgress) onProgress({ status: `Custom API returned status ${customResponse.status}. Falling back to default engine...` });
+      const result = await callProviderChat(provider, systemPrompt, userPrompt, batch);
+      if (result && result.length > 0) {
+        return result; // Successful translation!
       }
-    } catch (cErr) {
-      console.warn(`[Custom API Failed]: ${cErr.message}. Falling back to default engine...`);
-    }
-  }
+      throw new Error(`Provider returned empty or unparseable translation.`);
+    } catch (err) {
+      lastError = err;
+      console.warn(`[Translator Failover] Provider #${pIdx + 1} (${provider.name}) failed:`, err.message);
 
-  // Attempt Groq first
-  let lastError;
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    try {
-      const modelToUse = process.env.TRANSLATION_MODEL || 'qwen/qwen3.8-27b';
-
-      const response = await fetch(GROQ_CHAT_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${groqKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: modelToUse,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: 0.2
-        })
-      });
-
-      if (response.status === 429) {
-        const errJson = await response.json().catch(() => ({}));
-        const errMsg = errJson?.error?.message || '';
-
-        // If OpenRouter is available, immediately route to OpenRouter to bypass Groq rate limit
-        if (openRouterKey && openRouterKey.startsWith('sk-or-')) {
-          if (onProgress) {
-            onProgress({
-              status: `[Groq 429] Switching to OpenRouter (DeepSeek) to bypass rate limit immediately...`
-            });
-          }
-          return await translateViaOpenRouter(batch, systemPrompt, userPrompt, openRouterKey);
-        }
-
-        // Parse wait duration from Groq: "Please try again in X.Xs"
-        let waitSec = 6.5;
-        const match = errMsg.match(/try again in ([0-9.]+)s/i);
-        if (match && match[1]) {
-          waitSec = parseFloat(match[1]) + 0.5;
-        }
-
+      if (nextProvider) {
+        const reason = err.status === 429 ? 'Rate limit (HTTP 429)' : err.message;
         if (onProgress) {
           onProgress({
-            status: `[Rate Limit] Token quota cool-down: waiting ${waitSec.toFixed(1)}s before retry ${attempt}/4...`
+            status: `⚠️ [Failover] Provider #${pIdx + 1} (${provider.name}) hit ${reason}. Seamlessly switching to Provider #${pIdx + 2} (${nextProvider.name} - ${nextProvider.model})...`
           });
         }
-        console.warn(`[Groq Rate Limit] Waiting ${waitSec}s before retrying...`);
-        await new Promise(r => setTimeout(r, waitSec * 1000));
+        // Immediately try next provider in chain
         continue;
       }
 
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Groq API error (${response.status}): ${errText}`);
-      }
-
-      const data = await response.json();
-      return parseTranslatedContent(data.choices?.[0]?.message?.content, batch);
-    } catch (err) {
-      lastError = err;
-      console.warn(`[Translation] Attempt ${attempt} failed: ${err.message}`);
-      if (attempt < 4) {
-        await new Promise(r => setTimeout(r, 2000 * attempt));
+      // If this was the last provider and it failed due to 429 rate limit on Groq, wait and retry
+      if (err.status === 429 && provider.baseUrl.includes('groq.com')) {
+        let waitSec = 6.5;
+        const match = (err.message || '').match(/try again in ([0-9.]+)s/i);
+        if (match && match[1]) waitSec = parseFloat(match[1]) + 0.5;
+        if (onProgress) onProgress({ status: `[Rate Limit] Cooldown: waiting ${waitSec.toFixed(1)}s before retrying ${provider.name}...` });
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+        try {
+          const retryRes = await callProviderChat(provider, systemPrompt, userPrompt, batch);
+          if (retryRes && retryRes.length > 0) return retryRes;
+        } catch (retryErr) {
+          lastError = retryErr;
+        }
       }
     }
   }
 
-  // Final fallback to OpenRouter if Groq exhausted
-  if (openRouterKey) {
-    try {
-      if (onProgress) onProgress({ status: 'Falling back to OpenRouter...' });
-      return await translateViaOpenRouter(batch, systemPrompt, userPrompt, openRouterKey);
-    } catch (orErr) {
-      console.error('OpenRouter fallback also failed:', orErr);
-    }
-  }
-
-  throw lastError || new Error('Translation failed after multiple retries.');
+  throw lastError || new Error('All translation providers failed.');
 }
 
 /**
- * OpenRouter Fallback using DeepSeek
+ * Invokes an OpenAI-compatible /chat/completions endpoint for a specific provider.
  */
-async function translateViaOpenRouter(batch, systemPrompt, userPrompt, openRouterKey) {
-  const response = await fetch(OPENROUTER_CHAT_URL, {
+async function callProviderChat(provider, systemPrompt, userPrompt, batch) {
+  let endpointUrl = provider.baseUrl.replace(/\/+$/, '');
+  if (!endpointUrl.endsWith('/chat/completions')) {
+    endpointUrl += '/chat/completions';
+  }
+
+  const response = await fetch(endpointUrl, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${openRouterKey}`,
+      Authorization: `Bearer ${provider.apiKey}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'deepseek/deepseek-chat',
+      model: provider.model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
@@ -323,13 +467,24 @@ async function translateViaOpenRouter(batch, systemPrompt, userPrompt, openRoute
     })
   });
 
+  if (response.status === 429) {
+    const errJson = await response.json().catch(() => ({}));
+    const errMsg = errJson?.error?.message || 'Rate limit reached (429)';
+    const err = new Error(errMsg);
+    err.status = 429;
+    throw err;
+  }
+
   if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`OpenRouter API error (${response.status}): ${errText}`);
+    const errText = await response.text().catch(() => '');
+    const err = new Error(`API error (${response.status}): ${errText}`);
+    err.status = response.status;
+    throw err;
   }
 
   const data = await response.json();
-  return parseTranslatedContent(data.choices?.[0]?.message?.content, batch);
+  const content = data.choices?.[0]?.message?.content || data.text;
+  return parseTranslatedContent(content, batch);
 }
 
 /**
@@ -363,11 +518,12 @@ function parseTranslatedContent(rawContent, batch) {
     if (Array.isArray(parsed) && parsed.length > 0) {
       return batch.map(orig => {
         const found = parsed.find(p => p.id === orig.id);
+        const transText = found ? (found.text || found.translated_text || '') : '';
         return {
           id: orig.id,
           start: orig.start,
           end: orig.end,
-          text: (found && found.text) ? found.text.trim() : orig.text
+          text: (transText && transText.trim()) ? transText.trim() : orig.text
         };
       });
     }
@@ -379,7 +535,7 @@ function parseTranslatedContent(rawContent, batch) {
 }
 
 /**
- * Tests connection to a custom OpenAI-compatible endpoint (like top-tools-ai.com)
+ * Tests connection to any OpenAI-compatible endpoint (Groq, top-tools-ai.com, OpenRouter, Ollama, etc.)
  */
 export async function testCustomApiConnection(endpoint, model, apiKey) {
   if (!endpoint || !endpoint.startsWith('http')) {
@@ -419,4 +575,3 @@ export async function testCustomApiConnection(endpoint, model, apiKey) {
   const text = data.choices?.[0]?.message?.content || data.text || 'Success';
   return { success: true, model: modelToUse, reply: text.trim() };
 }
-

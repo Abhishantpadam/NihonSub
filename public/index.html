@@ -241,62 +241,130 @@
 
     </main>
 
-    <!-- Settings Modal (Keys & Custom Translation API / Agent) -->
+    <!-- Large Re-engineered Settings Modal (Transcription & Dynamic Multi-Provider Translation Chain) -->
     <div id="settingsModal" class="modal-backdrop hidden">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h3>Settings & Custom Translation API</h3>
-          <button id="closeSettingsBtn" class="btn-clear">✕</button>
+      <div class="modal-card settings-modal-card">
+        
+        <!-- Header -->
+        <div class="settings-modal-header">
+          <div class="settings-modal-title">
+            <h3>⚙️ AI Engine Settings & Model Pipeline</h3>
+            <p>Configure Speech-to-Text transcription and multi-model Translation fallback chain.</p>
+          </div>
+          <button id="closeSettingsBtn" class="btn-clear" title="Close settings">✕</button>
         </div>
-        <div class="modal-body">
-          <div class="input-group">
-            <label for="groqApiKeyInput">Groq API Key (Whisper Large-v3 ASR & LLM)</label>
-            <input type="password" id="groqApiKeyInput" placeholder="gsk_..." class="styled-input">
-            <small class="help-text">Standard key for speech-to-text and default translation.</small>
+
+        <!-- Navigation Tabs -->
+        <div class="settings-tabs-nav">
+          <button type="button" class="settings-tab-btn active" id="tabBtnTranscription" data-tab="transcription">
+            🎙️ Speech-to-Text (Transcription)
+          </button>
+          <button type="button" class="settings-tab-btn" id="tabBtnTranslation" data-tab="translation">
+            🌐 Translation Fallback Chain
+            <span id="tabProviderCount" class="tab-count-badge">1</span>
+          </button>
+        </div>
+
+        <!-- Body -->
+        <div class="settings-modal-body">
+          
+          <!-- TAB PANE 1: TRANSCRIPTION (SPEECH-TO-TEXT) -->
+          <div id="tabPaneTranscription" class="settings-panel">
+            <div class="callout-box">
+              <span class="callout-icon">🎙️</span>
+              <div>
+                <strong>Japanese Audio Speech Recognition (ASR):</strong>
+                Whisper converts Japanese audio and emotional vocalizations into timestamped dialogue. You can use Groq's high-speed Whisper Large-v3 or any OpenAI-compatible transcription endpoint.
+              </div>
+            </div>
+
+            <div class="settings-section-card">
+              <div class="preset-chips">
+                <span style="font-size:0.8rem; color:var(--text-muted);">Quick Presets:</span>
+                <button type="button" class="btn-chip" id="presetGroqWhisperBtn">⚡ Groq Whisper Large-v3 (Default / Fast)</button>
+                <button type="button" class="btn-chip" id="presetOpenAIWhisperBtn">🌐 OpenAI Whisper-1</button>
+                <button type="button" class="btn-chip" id="presetLocalWhisperBtn">💻 Local Whisper / Endpoint</button>
+              </div>
+
+              <div class="settings-grid-2col">
+                <div class="input-group">
+                  <label for="transcriptionEndpointInput">Transcription API Base URL (OpenAI-compatible)</label>
+                  <input type="url" id="transcriptionEndpointInput" placeholder="https://api.groq.com/openai/v1" class="styled-input" value="https://api.groq.com/openai/v1">
+                  <small class="help-text">Base URL (e.g. https://api.groq.com/openai/v1 or http://localhost:8000/v1)</small>
+                </div>
+                <div class="input-group">
+                  <label for="transcriptionModelInput">Whisper Model Name</label>
+                  <input type="text" id="transcriptionModelInput" placeholder="whisper-large-v3" class="styled-input" value="whisper-large-v3">
+                  <small class="help-text">e.g. whisper-large-v3, whisper-large-v3-turbo, whisper-1</small>
+                </div>
+              </div>
+
+              <div class="input-group">
+                <label for="transcriptionApiKeyInput">Transcription API Key</label>
+                <div class="password-input-wrap">
+                  <input type="password" id="transcriptionApiKeyInput" placeholder="gsk_... or sk-..." class="styled-input">
+                  <button type="button" class="btn-toggle-eye" id="toggleTransKeyEye" title="Show/Hide Key">👁️</button>
+                </div>
+                <small class="help-text">Your API key for the speech recognition service.</small>
+              </div>
+
+              <div class="provider-card-footer">
+                <button type="button" id="testTranscriptionBtn" class="btn btn-secondary">
+                  🧪 Test Speech Recognition Connection
+                </button>
+                <div id="transcriptionTestStatus" class="provider-test-status hidden"></div>
+              </div>
+            </div>
           </div>
 
-          <div class="input-group">
-            <label for="openRouterApiKeyInput">OpenRouter API Key (DeepSeek / Claude Fallback)</label>
-            <input type="password" id="openRouterApiKeyInput" placeholder="sk-or-v1-..." class="styled-input">
-            <small class="help-text">Optional fallback for heavy translation loads.</small>
+          <!-- TAB PANE 2: TRANSLATION FALLBACK CHAIN -->
+          <div id="tabPaneTranslation" class="settings-panel hidden">
+            <div class="callout-box">
+              <span class="callout-icon">🔄</span>
+              <div>
+                <strong>Automatic Failover / Fallback Chain:</strong>
+                Models execute in order of priority. If <strong>Provider #1</strong> encounters rate limits (HTTP 429), timeouts, or errors, NihonSub automatically fails over in real-time to <strong>Provider #2</strong>, then <strong>Provider #3</strong>.
+              </div>
+            </div>
+
+            <!-- Toolbar & Presets -->
+            <div class="providers-toolbar">
+              <div class="preset-chips" style="margin-bottom:0;">
+                <span style="font-size:0.8rem; color:var(--text-muted);">Add Preset:</span>
+                <button type="button" class="btn-chip" id="addGroqProviderBtn">+ Groq (Qwen 3.8)</button>
+                <button type="button" class="btn-chip" id="addTopToolsProviderBtn">+ top-tools-ai.com</button>
+                <button type="button" class="btn-chip" id="addOpenRouterProviderBtn">+ OpenRouter (DeepSeek)</button>
+                <button type="button" class="btn-chip" id="addOllamaProviderBtn">+ Local Ollama</button>
+              </div>
+              <button type="button" class="btn btn-primary btn-sm" id="addCustomProviderBtn">
+                + Add Another API Key
+              </button>
+            </div>
+
+            <!-- Dynamic Providers Container -->
+            <div id="translationProvidersContainer" class="providers-list">
+              <!-- Dynamically populated via app.js -->
+            </div>
           </div>
 
-          <hr class="divider">
-
-          <h4 class="settings-subtitle">🌐 Custom Translation API / Agent Connection</h4>
-          <p class="help-text">Connect your own custom translator service, local LLM, or agent (OpenAI-compatible /chat/completions endpoint):</p>
-
-          <div class="preset-chips">
-            <span style="font-size:0.8rem; color:var(--text-muted);">Quick Presets:</span>
-            <button type="button" class="btn-chip" id="presetTopToolsBtn">⚡ top-tools-ai.com</button>
-            <button type="button" class="btn-chip" id="presetLocalOllamaBtn">🦙 Local Ollama</button>
-            <button type="button" class="btn-chip" id="presetClearCustomBtn">✖ Clear</button>
-          </div>
-
-          <div class="input-group">
-            <label for="customApiKeyInput">Custom API Key</label>
-            <input type="password" id="customApiKeyInput" placeholder="sk-... (Required for top-tools-ai.com)" class="styled-input">
-            <small class="help-text">Your API key for top-tools-ai.com or custom provider.</small>
-          </div>
-
-          <div class="input-group">
-            <label for="customEndpointInput">Custom Translation API URL (Base or /chat/completions)</label>
-            <input type="url" id="customEndpointInput" placeholder="https://top-tools-ai.com/api/v1" class="styled-input">
-            <small class="help-text">e.g. https://top-tools-ai.com/api/v1 (Leave blank to use default Groq translator)</small>
-          </div>
-
-          <div class="input-group">
-            <label for="customModelInput">Custom Model Name</label>
-            <input type="text" id="customModelInput" placeholder="Top-Tools-Ai, DeepSeek-V4-Pro, GLM-5.3, etc." class="styled-input">
-            <small class="help-text">For top-tools-ai.com: Top-Tools-Ai, DeepSeek-V4-Pro, GLM-5.3, or Qwen-3.8-Max</small>
-          </div>
-
+          <!-- Global Settings Message Banner -->
           <div id="settingsMessage" class="settings-msg hidden"></div>
+
         </div>
-        <div class="modal-footer">
-          <button type="button" id="testCustomApiBtn" class="btn btn-secondary">🧪 Test Connection</button>
-          <button id="saveSettingsBtn" class="btn btn-primary">Save Settings</button>
+
+        <!-- Footer -->
+        <div class="settings-modal-footer">
+          <div class="footer-left-group">
+            <button type="button" id="resetDefaultsBtn" class="btn btn-ghost btn-sm" title="Reset all settings to recommended defaults">
+              🔄 Reset Defaults
+            </button>
+          </div>
+          <div class="footer-right-group">
+            <button type="button" id="closeSettingsFooterBtn" class="btn btn-outline">Close</button>
+            <button type="button" id="saveSettingsBtn" class="btn btn-primary">💾 Save Settings</button>
+          </div>
         </div>
+
       </div>
     </div>
 
