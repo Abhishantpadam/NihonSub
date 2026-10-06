@@ -65,6 +65,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // In-memory configuration store initialized from environment
 let serverConfig = {
+  translationMode: 'fallback', // 'fallback' | 'ensemble'
   transcription: {
     baseUrl: process.env.TRANSCRIPTION_BASE_URL || 'https://api.groq.com/openai/v1',
     model: process.env.TRANSCRIPTION_MODEL || 'whisper-large-v3',
@@ -119,6 +120,7 @@ app.get('/api/config', (req, res) => {
   const isGroqConfigured = groqKey.length > 10 || Boolean(tKey);
 
   res.json({
+    translationMode: serverConfig.translationMode || 'fallback',
     transcription: {
       baseUrl: serverConfig.transcription.baseUrl,
       model: serverConfig.transcription.model,
@@ -141,6 +143,7 @@ app.get('/api/config', (req, res) => {
  */
 app.post('/api/config', (req, res) => {
   const {
+    translationMode,
     transcription,
     translationProviders,
     groqApiKey,
@@ -150,7 +153,12 @@ app.post('/api/config', (req, res) => {
     customModel
   } = req.body;
 
-  // 1. Update transcription config
+  // 1. Update translation mode
+  if (translationMode && (translationMode === 'fallback' || translationMode === 'ensemble')) {
+    serverConfig.translationMode = translationMode;
+  }
+
+  // 2. Update transcription config
   if (transcription) {
     if (transcription.baseUrl && transcription.baseUrl.trim()) {
       serverConfig.transcription.baseUrl = transcription.baseUrl.trim();
@@ -167,7 +175,7 @@ app.post('/api/config', (req, res) => {
     }
   }
 
-  // 2. Update translation providers array
+  // 3. Update translation providers array
   if (Array.isArray(translationProviders) && translationProviders.length > 0) {
     const updated = [];
     translationProviders.forEach((incoming, idx) => {
@@ -189,7 +197,7 @@ app.post('/api/config', (req, res) => {
     serverConfig.translationProviders = updated;
   }
 
-  // 3. Backward compatibility updates
+  // 4. Backward compatibility updates
   if (groqApiKey && groqApiKey.trim().length > 10 && !groqApiKey.includes('...')) {
     process.env.GROQ_API_KEY = groqApiKey.trim();
     serverConfig.transcription.apiKey = groqApiKey.trim();
@@ -244,7 +252,6 @@ app.post('/api/test-custom-api', async (req, res) => {
 
   let effectiveKey = (apiKey && apiKey.trim()) || '';
   if (!effectiveKey || effectiveKey.includes('...')) {
-    // Look up provider in serverConfig if providerId passed
     if (providerId) {
       const match = serverConfig.translationProviders.find(p => p.id === providerId);
       if (match) effectiveKey = match.apiKey;
@@ -267,10 +274,20 @@ app.post('/api/test-custom-api', async (req, res) => {
 });
 
 /**
- * POST /api/retranslate: Fast re-translation of existing subtitles using multi-provider fallback
+ * POST /api/retranslate: Fast re-translation of existing subtitles using multi-provider fallback or ensemble
  */
 app.post('/api/retranslate', async (req, res) => {
-  const { jobId, targetLang, hindiScript, translationProviders, customEndpoint, customModel, customApiKey } = req.body;
+  const {
+    jobId,
+    targetLang,
+    hindiScript,
+    translationProviders,
+    customEndpoint,
+    customModel,
+    customApiKey,
+    translationMode
+  } = req.body;
+
   if (!jobId) {
     return res.status(400).json({ error: 'Job ID is required.' });
   }
@@ -309,6 +326,7 @@ app.post('/api/retranslate', async (req, res) => {
     }
 
     const chosenLang = targetLang || 'en';
+    const effectiveMode = translationMode || serverConfig.translationMode || 'fallback';
     const resultSubtitles = {};
 
     // Pass 1: Global Context Dossier for re-translation
@@ -328,7 +346,8 @@ app.post('/api/retranslate', async (req, res) => {
         null,
         'devanagari',
         null,
-        globalDossier
+        globalDossier,
+        effectiveMode
       );
       const enSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'en', enSegments);
       resultSubtitles.en = {
@@ -359,7 +378,8 @@ app.post('/api/retranslate', async (req, res) => {
         null,
         script,
         null,
-        globalDossier
+        globalDossier,
+        effectiveMode
       );
       const hiSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'hi', hiSegments);
       resultSubtitles.hi = {
@@ -713,6 +733,7 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
   }
 
   const targetLang = req.body.targetLang || 'en'; // 'en', 'hi', or 'both'
+  const translationMode = req.body.translationMode || serverConfig.translationMode || 'fallback';
   const videoPath = req.file.path;
   const videoFileName = req.file.filename;
   const jobId = path.parse(videoFileName).name;
@@ -827,6 +848,10 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
     const primaryProvName = activeProviders[0]?.name || 'Primary AI';
     const fallbackCount = Math.max(0, activeProviders.length - 1);
     const chainDesc = fallbackCount > 0 ? `${primaryProvName} (+${fallbackCount} fallback)` : primaryProvName;
+    const isEnsemble = translationMode === 'ensemble' && activeProviders.length > 1;
+    const modeDesc = isEnsemble
+      ? `🏆 Ensemble Consensus Matrix (${activeProviders.length} models in parallel)`
+      : chainDesc;
 
     sendEvent({
       type: 'progress',
@@ -853,7 +878,7 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
       type: 'progress',
       step: 'translate',
       percent: 65,
-      message: `Beginning contextual translation to ${targetLang.toUpperCase()} via ${chainDesc}...`
+      message: `Beginning contextual translation to ${targetLang.toUpperCase()} via ${modeDesc}...`
     });
 
     // English Translation
@@ -862,7 +887,7 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
         type: 'progress',
         step: 'translate',
         percent: 65,
-        message: 'Translating to English (preserving sighs, moans, grunts, fillers)...'
+        message: `Translating to English (${isEnsemble ? 'Ensemble consensus voting' : 'preserving vocal markers'})...`
       });
 
       const enSegments = await translateSegments(
@@ -882,7 +907,8 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
         null,
         'devanagari',
         null,
-        globalDossier
+        globalDossier,
+        translationMode
       );
 
       const enSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'en', enSegments);
@@ -933,7 +959,8 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
         null,
         hindiScript,
         null,
-        globalDossier
+        globalDossier,
+        translationMode
       );
 
       const hiSubs = await saveSubtitles(SUBTITLES_DIR, jobId, 'hi', hiSegments);
@@ -974,6 +1001,7 @@ app.post('/api/process', upload.single('video'), async (req, res) => {
         videoFileName,
         videoStreamUrl: `/api/stream/${jobId}`,
         targetLang,
+        translationMode,
         segmentsCount: jaSegments.length,
         durationMinutes: durationMin,
         subtitles: resultSubtitles

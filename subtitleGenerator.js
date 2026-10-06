@@ -72,7 +72,8 @@ export function generateBilingualSegments(jaSegments, translatedSegments) {
       id: trans.id,
       start: trans.start,
       end: trans.end,
-      text: `${trans.text}\n${origText}`.trim()
+      text: `${trans.text}\n${origText}`.trim(),
+      ...(trans.ensemble ? { ensemble: trans.ensemble } : {})
     };
   });
 }

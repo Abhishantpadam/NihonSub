@@ -167,7 +167,10 @@ Format as a concise, structured bulleted brief (under 180 words).`;
 /**
  * Translates Japanese subtitle segments into English or Hindi while preserving
  * emotional vocalizations, grunts, moans, sighs, humming, and exact timestamps.
- * Iterates through translation providers with automatic fallback on rate limits or errors.
+ * Supports:
+ * - 'fallback' mode (v1): Sequential provider execution with real-time failover on rate limits.
+ * - 'ensemble' mode (v2): Parallel multi-model dispatch, semantic clustering to prune hallucinations,
+ *                         and best-fit subtitle scoring.
  */
 export async function translateSegments(
   segments,
@@ -179,7 +182,8 @@ export async function translateSegments(
   customModel,
   scriptOption = 'devanagari',
   customApiKey = null,
-  cachedGlobalDossier = null
+  cachedGlobalDossier = null,
+  translationMode = 'fallback'
 ) {
   if (!segments || segments.length === 0) {
     return [];
@@ -231,28 +235,43 @@ export async function translateSegments(
     const chunk = segments.slice(i, i + BATCH_SIZE);
 
     if (onProgress) {
+      const modeLabel = translationMode === 'ensemble' ? '🏆 Ensemble Multi-Model' : 'Context-aware';
       onProgress({
         lang: targetLang,
         batch: batchIndex,
         totalBatches,
         completedSegments: results.length,
         totalSegments: segments.length,
-        status: `Translating batch ${batchIndex}/${totalBatches} (${chunk.length} segments with full context awareness)...`
+        status: `Translating batch ${batchIndex}/${totalBatches} (${chunk.length} segments with ${modeLabel})...`
       });
     }
 
     const previousContext = i > 0 ? segments.slice(Math.max(0, i - 4), i) : [];
 
-    const translatedChunk = await translateBatchWithFallback(
-      chunk,
-      langName,
-      targetLang,
-      providers,
-      onProgress,
-      scriptOption,
-      previousContext,
-      globalDossier
-    );
+    let translatedChunk;
+    if (translationMode === 'ensemble') {
+      translatedChunk = await translateBatchEnsemble(
+        chunk,
+        langName,
+        targetLang,
+        providers,
+        onProgress,
+        scriptOption,
+        previousContext,
+        globalDossier
+      );
+    } else {
+      translatedChunk = await translateBatchWithFallback(
+        chunk,
+        langName,
+        targetLang,
+        providers,
+        onProgress,
+        scriptOption,
+        previousContext,
+        globalDossier
+      );
+    }
 
     results.push(...translatedChunk);
 
@@ -272,16 +291,117 @@ export async function translateSegments(
 }
 
 /**
- * Translates a single batch using a multi-provider fallback chain:
- * If Provider #1 hits a 429 rate limit, 5xx, or network failure:
- * Automatically falls over in real-time to Provider #2, then Provider #3.
+ * Calculates semantic text similarity between two strings using a hybrid of
+ * token Jaccard similarity and character 3-gram Dice coefficient.
+ * Returns a value between 0.0 (completely dissimilar) and 1.0 (identical).
  */
-async function translateBatchWithFallback(
+export function computeTextSimilarity(textA, textB) {
+  const normA = (textA || '').trim().toLowerCase();
+  const normB = (textB || '').trim().toLowerCase();
+
+  if (normA === normB) return 1.0;
+  if (!normA || !normB) return 0.0;
+
+  // 1. Token Jaccard Similarity (Unicode-safe word boundary parsing)
+  const tokensA = new Set(normA.replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean));
+  const tokensB = new Set(normB.replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean));
+  let tokenInter = 0;
+  tokensA.forEach(t => { if (tokensB.has(t)) tokenInter++; });
+  const tokenUnion = new Set([...tokensA, ...tokensB]).size;
+  const tokenSim = tokenUnion > 0 ? tokenInter / tokenUnion : 0;
+
+  // 2. Character 3-Gram Dice Similarity (handles spelling variations, slang, punctuation differences)
+  const ngramsA = new Set();
+  for (let i = 0; i <= normA.length - 3; i++) ngramsA.add(normA.substring(i, i + 3));
+  const ngramsB = new Set();
+  for (let i = 0; i <= normB.length - 3; i++) ngramsB.add(normB.substring(i, i + 3));
+  let ngramInter = 0;
+  ngramsA.forEach(g => { if (ngramsB.has(g)) ngramInter++; });
+  const ngramTotal = ngramsA.size + ngramsB.size;
+  const ngramSim = ngramTotal > 0 ? (2 * ngramInter) / ngramTotal : 0;
+
+  return (tokenSim * 0.55) + (ngramSim * 0.45);
+}
+
+/**
+ * Stage 1: Clusters candidate translations by semantic meaning.
+ * Identifies majority consensus and flags outlier hallucinations.
+ */
+export function clusterCandidates(candidates, threshold = 0.22) {
+  const clusters = [];
+  for (const cand of candidates) {
+    let placed = false;
+    for (const cluster of clusters) {
+      const sim = computeTextSimilarity(cand.text, cluster.representative.text);
+      if (sim >= threshold) {
+        cluster.members.push(cand);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      clusters.push({
+        representative: cand,
+        members: [cand]
+      });
+    }
+  }
+  // Sort clusters by member count descending (largest consensus cluster first)
+  clusters.sort((a, b) => b.members.length - a.members.length);
+  return clusters;
+}
+
+/**
+ * Stage 2: Evaluates and scores candidate translations based on:
+ * - CPS (Characters per second) subtitle readability
+ * - Agreement with direct acoustic audio translation (Channel B)
+ * - Preservation of emotional vocalizations and expressive punctuation
+ */
+export function scoreCandidate(cand, seg) {
+  let score = 50.0;
+  const duration = Math.max(0.6, (seg.end - seg.start));
+  const len = cand.text.length;
+  const cps = len / duration;
+
+  // 1. Reading Speed (CPS) optimization for subtitle cinema
+  if (cps >= 9 && cps <= 23) {
+    score += 25.0; // Sweet spot for anime subtitle readability
+  } else if (cps < 9 && cps >= 3) {
+    score += 15.0; // Acceptable brief subtitle
+  } else if (cps > 23 && cps <= 29) {
+    score += 8.0; // Slightly fast but readable
+  } else if (cps > 32) {
+    score -= 22.0; // Excessive text bloat for timestamp interval
+  }
+
+  // 2. Channel B Acoustic Agreement
+  if (seg.acousticAudioTranslation) {
+    const acousticSim = computeTextSimilarity(cand.text, seg.acousticAudioTranslation);
+    score += (acousticSim * 25.0);
+  }
+
+  // 3. Emotion / Vocalization cues
+  const ja = seg.text || '';
+  if ((ja.includes('！') || ja.includes('!')) && (cand.text.includes('!') || cand.text.includes('！'))) score += 5.0;
+  if ((ja.includes('？') || ja.includes('?')) && (cand.text.includes('?') || cand.text.includes('？'))) score += 5.0;
+  if ((ja.includes('…') || ja.includes('...')) && (cand.text.includes('...') || cand.text.includes('…'))) score += 5.0;
+
+  // 4. Cleanliness check (no markdown or JSON leakage)
+  if (cand.text.includes('```') || cand.text.includes('{') || cand.text.includes('}')) {
+    score -= 40.0;
+  }
+
+  return Math.round(score * 10) / 10;
+}
+
+/**
+ * Generates unified system and user prompts with full contextual awareness,
+ * vocalization mappings, and Global Character Dossier.
+ */
+function buildTranslationPrompts(
   batch,
   langName,
   targetLangCode,
-  providers,
-  onProgress,
   scriptOption = 'devanagari',
   previousContext = [],
   globalDossier = null
@@ -303,7 +423,7 @@ Examples:
 * "Kripya meri madad karo."`;
     } else {
       scriptInstruction = `
-SCRIPT REQUIREMENT: MANDATORY STANDARD DEVANAGARI (देवナगरी).
+SCRIPT REQUIREMENT: MANDATORY STANDARD DEVANAGARI (देवनागरी).
 Write in clear, standard Hindi written exclusively in the Devanagari script.
 Examples:
 * "मुझे यह बहुत पसंद है!"
@@ -389,6 +509,193 @@ Do NOT enclose the output in markdown codeblocks or add any extra conversational
       }
       return item;
     })
+  );
+
+  return { systemPrompt, userPrompt };
+}
+
+/**
+ * Translates a single batch using the Multi-Model Ensemble Consensus & Voting Engine (v2):
+ * 1. Dispatches the batch to all configured providers concurrently.
+ * 2. Stage 1: Clusters candidate outputs semantically to prune hallucinations.
+ * 3. Stage 2: Evaluates remaining candidates on CPS, acoustic agreement, and emotion.
+ * 4. Synthesizes winning subtitle with candidate inspection metadata.
+ */
+async function translateBatchEnsemble(
+  batch,
+  langName,
+  targetLangCode,
+  providers,
+  onProgress,
+  scriptOption = 'devanagari',
+  previousContext = [],
+  globalDossier = null
+) {
+  const { systemPrompt, userPrompt } = buildTranslationPrompts(
+    batch,
+    langName,
+    targetLangCode,
+    scriptOption,
+    previousContext,
+    globalDossier
+  );
+
+  // Parallel dispatch across all configured providers
+  const dispatchPromises = providers.map(async (provider) => {
+    try {
+      const result = await callProviderChat(provider, systemPrompt, userPrompt, batch);
+      return { provider, result, error: null };
+    } catch (err) {
+      console.warn(`[Ensemble Model Failed]: ${provider.name} (${provider.model}): ${err.message}`);
+      return { provider, result: null, error: err };
+    }
+  });
+
+  const settled = await Promise.all(dispatchPromises);
+  const successful = settled.filter(s => s.result && s.result.length > 0);
+
+  if (successful.length === 0) {
+    console.warn('[Ensemble] All parallel dispatches failed. Falling back to sequential chain...');
+    return translateBatchWithFallback(
+      batch,
+      langName,
+      targetLangCode,
+      providers,
+      onProgress,
+      scriptOption,
+      previousContext,
+      globalDossier
+    );
+  }
+
+  // Synthesize consensus and best-fit winner for each segment
+  const results = batch.map(seg => {
+    const candidates = [];
+    successful.forEach(s => {
+      const match = s.result.find(r => r.id === seg.id);
+      if (match && match.text && match.text.trim()) {
+        candidates.push({
+          providerId: s.provider.id,
+          providerName: s.provider.name,
+          providerModel: s.provider.model,
+          text: match.text.trim()
+        });
+      }
+    });
+
+    if (candidates.length === 0) {
+      return {
+        id: seg.id,
+        start: seg.start,
+        end: seg.end,
+        text: seg.text
+      };
+    }
+
+    if (candidates.length === 1) {
+      const only = candidates[0];
+      const singleScore = scoreCandidate(only, seg);
+      return {
+        id: seg.id,
+        start: seg.start,
+        end: seg.end,
+        text: only.text,
+        ensemble: {
+          winner: only.providerName,
+          winnerModel: only.providerModel,
+          winnerScore: singleScore,
+          consensusCount: 1,
+          totalVotes: 1,
+          candidates: [{
+            provider: only.providerName,
+            model: only.providerModel,
+            text: only.text,
+            isWinner: true,
+            score: singleScore,
+            clusterVotes: 1,
+            cps: Number((only.text.length / Math.max(0.6, seg.end - seg.start)).toFixed(1)),
+            isOutlier: false
+          }]
+        }
+      };
+    }
+
+    // Stage 1: Semantic Clustering
+    const clusters = clusterCandidates(candidates);
+    const winningCluster = clusters[0];
+
+    // Score all members of winning cluster
+    winningCluster.members.forEach(c => {
+      c.score = scoreCandidate(c, seg);
+      c.clusterVotes = winningCluster.members.length;
+      c.isOutlier = false;
+    });
+
+    // Score outliers from non-majority clusters (marked as hallucination/outlier)
+    clusters.slice(1).forEach(c => {
+      c.members.forEach(outlier => {
+        outlier.score = Math.max(5.0, scoreCandidate(outlier, seg) - 35.0);
+        outlier.clusterVotes = c.members.length;
+        outlier.isOutlier = true;
+      });
+    });
+
+    // Sort winning cluster by best-fit score descending
+    winningCluster.members.sort((a, b) => b.score - a.score);
+    const winner = winningCluster.members[0];
+
+    const allCandidateRecords = candidates.map(c => ({
+      provider: c.providerName,
+      model: c.providerModel,
+      text: c.text,
+      isWinner: c.text === winner.text && c.providerName === winner.providerName,
+      score: c.score || 45.0,
+      clusterVotes: c.clusterVotes || 1,
+      cps: Number((c.text.length / Math.max(0.6, seg.end - seg.start)).toFixed(1)),
+      isOutlier: Boolean(c.isOutlier)
+    }));
+
+    return {
+      id: seg.id,
+      start: seg.start,
+      end: seg.end,
+      text: winner.text,
+      ensemble: {
+        winner: winner.providerName,
+        winnerModel: winner.providerModel,
+        winnerScore: winner.score,
+        consensusCount: winningCluster.members.length,
+        totalVotes: candidates.length,
+        candidates: allCandidateRecords
+      }
+    };
+  });
+
+  return results;
+}
+
+/**
+ * Translates a single batch using a multi-provider fallback chain (v1):
+ * If Provider #1 hits a 429 rate limit, 5xx, or network failure:
+ * Automatically falls over in real-time to Provider #2, then Provider #3.
+ */
+async function translateBatchWithFallback(
+  batch,
+  langName,
+  targetLangCode,
+  providers,
+  onProgress,
+  scriptOption = 'devanagari',
+  previousContext = [],
+  globalDossier = null
+) {
+  const { systemPrompt, userPrompt } = buildTranslationPrompts(
+    batch,
+    langName,
+    targetLangCode,
+    scriptOption,
+    previousContext,
+    globalDossier
   );
 
   let lastError = null;

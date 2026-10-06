@@ -92,10 +92,34 @@
             </div>
           </div>
 
+          <!-- Translation Engine Mode Selector (v1 Fast Fallback vs v2 Multi-Model Ensemble) -->
+          <div class="config-row-nested">
+            <div class="config-label-row">
+              <label class="config-label">Translation Pipeline Mode:</label>
+              <span class="badge-tag" id="modeTagBadge">v2 Ensemble Engine</span>
+            </div>
+            <div class="radio-pill-group">
+              <label class="radio-pill">
+                <input type="radio" name="translationMode" value="fallback" checked>
+                <span>⚡ Fast Fallback (v1)</span>
+              </label>
+              <label class="radio-pill">
+                <input type="radio" name="translationMode" value="ensemble">
+                <span>🏆 Multi-Model Ensemble Voting (v2)</span>
+              </label>
+            </div>
+            <div class="mode-description-box" id="modeDescriptionBox">
+              <span class="mode-desc-icon" id="modeDescIcon">⚡</span>
+              <span class="mode-desc-text" id="modeDescText">
+                <strong>Fast Fallback (v1):</strong> Uses your primary translation model and automatically fails over in real-time to backup models if rate limits (429) or timeouts occur.
+              </span>
+            </div>
+          </div>
+
           <!-- Custom Translation / Agent Notice -->
           <div class="custom-api-status-row">
             <span class="text-muted" id="activeTranslatorNotice">Using Built-in AI Translator (Whisper Large-v3 + Contextual LLM)</span>
-            <button type="button" class="btn-link" id="configureTranslatorLink">Connect Custom Translation API ➔</button>
+            <button type="button" class="btn-link" id="configureTranslatorLink">Manage Multi-AI Models & Settings ➔</button>
           </div>
         </div>
 
@@ -317,13 +341,34 @@
             </div>
           </div>
 
-          <!-- TAB PANE 2: TRANSLATION FALLBACK CHAIN -->
+          <!-- TAB PANE 2: TRANSLATION FALLBACK CHAIN & ENSEMBLE -->
           <div id="tabPaneTranslation" class="settings-panel hidden">
+            <!-- Mode preference selector in settings -->
+            <div class="settings-mode-card">
+              <div class="mode-card-header">
+                <span class="mode-card-icon">🏆</span>
+                <div>
+                  <strong>Default Translation Engine Mode:</strong>
+                  <p class="text-muted" style="margin: 0.2rem 0 0; font-size: 0.85rem;">Choose between single-model sequential fallback and parallel multi-model ensemble voting.</p>
+                </div>
+              </div>
+              <div class="radio-pill-group" style="margin-top: 0.75rem;">
+                <label class="radio-pill">
+                  <input type="radio" name="settingsTranslationMode" value="fallback" checked>
+                  <span>⚡ Fast Fallback (v1)</span>
+                </label>
+                <label class="radio-pill">
+                  <input type="radio" name="settingsTranslationMode" value="ensemble">
+                  <span>🏆 Multi-Model Ensemble Voting (v2)</span>
+                </label>
+              </div>
+            </div>
+
             <div class="callout-box">
               <span class="callout-icon">🔄</span>
               <div>
-                <strong>Automatic Failover / Fallback Chain:</strong>
-                Models execute in order of priority. If <strong>Provider #1</strong> encounters rate limits (HTTP 429), timeouts, or errors, NihonSub automatically fails over in real-time to <strong>Provider #2</strong>, then <strong>Provider #3</strong>.
+                <strong>Multi-Model Architecture:</strong>
+                In <strong>Ensemble Mode (v2)</strong>, all models below are queried simultaneously, voting on every line to eliminate hallucinations. In <strong>Fallback Mode (v1)</strong>, Provider #1 translates and NihonSub automatically fails over to Provider #2 if rate limits occur.
               </div>
             </div>
 
@@ -389,6 +434,51 @@
         </div>
         <div class="modal-footer">
           <button id="closeLogModalFooterBtn" class="btn btn-primary">Close</button>
+        </div>
+    <!-- Candidate Inspector Modal (v2 Multi-Model Consensus Inspection) -->
+    <div id="candidateInspectorModal" class="modal-backdrop hidden">
+      <div class="modal-card candidate-modal-card">
+        <div class="modal-header">
+          <div class="modal-title-with-badge">
+            <h3>🏆 Multi-Model Candidate Inspector</h3>
+            <span id="inspectorSegmentIdBadge" class="badge-mini">Segment #1</span>
+          </div>
+          <button id="closeInspectorBtn" class="btn-clear" title="Close inspector">✕</button>
+        </div>
+
+        <div class="modal-body candidate-modal-body">
+          <!-- Segment Dialogue Context -->
+          <div class="inspector-context-card">
+            <div class="inspector-context-row">
+              <span class="context-label">⏱️ Timestamp Slot:</span>
+              <span class="context-value" id="inspectorTimeSlot">00:00.000 ➔ 00:02.500</span>
+            </div>
+            <div class="inspector-context-row">
+              <span class="context-label">🇯🇵 Spoken Japanese:</span>
+              <span class="context-value ja-text" id="inspectorJaText">待って！</span>
+            </div>
+            <div class="inspector-context-row" id="inspectorAcousticRow">
+              <span class="context-label">🎧 Acoustic Audio (Channel B):</span>
+              <span class="context-value audio-text" id="inspectorAcousticText">"Wait for me!"</span>
+            </div>
+            <div class="inspector-consensus-summary">
+              <span class="consensus-badge" id="inspectorConsensusBadge">🗳️ 3 of 3 Models Agreed (100% Consensus)</span>
+            </div>
+          </div>
+
+          <!-- Candidates Grid / List -->
+          <div class="candidates-section-title">
+            <h4>Cross-Model Translations & Evaluation Scores</h4>
+            <small class="text-muted">Review candidate translations generated by each AI model. You can click "Apply Candidate" to set any model's translation for this subtitle segment.</small>
+          </div>
+
+          <div id="candidatesListContainer" class="candidates-list">
+            <!-- Dynamically populated via app.js -->
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button id="closeInspectorFooterBtn" class="btn btn-primary">Done</button>
         </div>
       </div>
     </div>

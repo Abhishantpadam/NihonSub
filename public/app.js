@@ -36,6 +36,9 @@ let translationProviders = [
   }
 ];
 
+// Translation Pipeline Mode: 'fallback' (v1) | 'ensemble' (v2)
+let currentTranslationMode = 'fallback';
+
 // Containers
 const step1Section = document.getElementById('step1Section');
 const processingCard = document.getElementById('processingCard');
@@ -53,6 +56,27 @@ const generateBtn = document.getElementById('generateBtn');
 const activeTranslatorNotice = document.getElementById('activeTranslatorNotice');
 const configureTranslatorLink = document.getElementById('configureTranslatorLink');
 const hindiScriptRow = document.getElementById('hindiScriptRow');
+
+// Translation Mode Elements
+const translationModeRadios = document.querySelectorAll('input[name="translationMode"]');
+const settingsTranslationModeRadios = document.querySelectorAll('input[name="settingsTranslationMode"]');
+const modeDescIcon = document.getElementById('modeDescIcon');
+const modeDescText = document.getElementById('modeDescText');
+const modeTagBadge = document.getElementById('modeTagBadge');
+
+// Candidate Inspector Modal Elements
+const candidateInspectorModal = document.getElementById('candidateInspectorModal');
+const closeInspectorBtn = document.getElementById('closeInspectorBtn');
+const closeInspectorFooterBtn = document.getElementById('closeInspectorFooterBtn');
+const inspectorSegmentIdBadge = document.getElementById('inspectorSegmentIdBadge');
+const inspectorTimeSlot = document.getElementById('inspectorTimeSlot');
+const inspectorJaText = document.getElementById('inspectorJaText');
+const inspectorAcousticRow = document.getElementById('inspectorAcousticRow');
+const inspectorAcousticText = document.getElementById('inspectorAcousticText');
+const inspectorConsensusBadge = document.getElementById('inspectorConsensusBadge');
+const candidatesListContainer = document.getElementById('candidatesListContainer');
+let inspectingSegment = null;
+let inspectingSegmentIndex = -1;
 
 // DOM Elements - Processing State
 const processingTitle = document.getElementById('processingTitle');
@@ -161,6 +185,9 @@ function loadStoredSettings() {
       if (Array.isArray(parsed.translationProviders) && parsed.translationProviders.length > 0) {
         translationProviders = parsed.translationProviders;
       }
+      if (parsed.translationMode) {
+        currentTranslationMode = parsed.translationMode;
+      }
     } else {
       // Legacy migration
       const legacyKey = localStorage.getItem('nihonsub_custom_api_key') || '';
@@ -185,6 +212,10 @@ async function checkConfig() {
   try {
     const res = await fetch('/api/config');
     const data = await res.json();
+
+    if (data.translationMode) {
+      currentTranslationMode = data.translationMode;
+    }
 
     if (data.transcription) {
       if (data.transcription.baseUrl) transcriptionConfig.baseUrl = data.transcription.baseUrl;
@@ -223,6 +254,7 @@ async function checkConfig() {
       }
     }
 
+    setTranslationMode(currentTranslationMode);
     renderSettingsUI();
     updateCustomTranslatorUI();
   } catch {
@@ -230,7 +262,47 @@ async function checkConfig() {
       apiKeyStatus.className = 'status-chip missing';
       apiKeyStatus.querySelector('.text').textContent = 'Server Offline';
     }
+    setTranslationMode(currentTranslationMode);
   }
+}
+
+function setTranslationMode(mode) {
+  if (mode !== 'fallback' && mode !== 'ensemble') return;
+  currentTranslationMode = mode;
+
+  // Sync Step 1 Radios
+  translationModeRadios.forEach(r => {
+    r.checked = (r.value === mode);
+  });
+
+  // Sync Settings Radios
+  settingsTranslationModeRadios.forEach(r => {
+    r.checked = (r.value === mode);
+  });
+
+  if (modeDescIcon && modeDescText) {
+    if (mode === 'ensemble') {
+      modeDescIcon.textContent = '🏆';
+      modeDescText.innerHTML = '<strong>Multi-Model Ensemble Voting (v2):</strong> Queries all configured AI models in parallel, eliminates hallucinations via semantic clustering, and crowns the best-fit subtitle for each line.';
+      if (modeTagBadge) {
+        modeTagBadge.textContent = 'v2 Ensemble Active';
+        modeTagBadge.style.background = 'linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.2))';
+        modeTagBadge.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+        modeTagBadge.style.color = '#fbbf24';
+      }
+    } else {
+      modeDescIcon.textContent = '⚡';
+      modeDescText.innerHTML = '<strong>Fast Fallback (v1):</strong> Uses your primary translation model and automatically fails over in real-time to backup models if rate limits (429) or timeouts occur.';
+      if (modeTagBadge) {
+        modeTagBadge.textContent = 'v1 Fast Fallback';
+        modeTagBadge.style.background = 'linear-gradient(135deg, rgba(225, 29, 72, 0.2), rgba(168, 85, 247, 0.2))';
+        modeTagBadge.style.borderColor = 'rgba(225, 29, 72, 0.35)';
+        modeTagBadge.style.color = '#f43f5e';
+      }
+    }
+  }
+
+  updateCustomTranslatorUI();
 }
 
 function updateCustomTranslatorUI() {
@@ -238,9 +310,12 @@ function updateCustomTranslatorUI() {
   const activeCount = translationProviders.length;
   const primary = translationProviders[0] || { name: 'Groq LPU', model: 'qwen3.8-27b' };
 
-  if (activeCount > 1) {
+  if (currentTranslationMode === 'ensemble') {
+    activeTranslatorNotice.textContent = `🏆 Ensemble Engine Active: ${activeCount} model${activeCount === 1 ? '' : 's'} running in parallel with consensus voting`;
+    activeTranslatorNotice.style.color = '#fbbf24';
+  } else if (activeCount > 1) {
     const secondary = translationProviders[1];
-    activeTranslatorNotice.textContent = `⚡ Multi-AI Active: ${primary.name} ➔ ${secondary.name} (Fallback)`;
+    activeTranslatorNotice.textContent = `⚡ Fast Fallback: ${primary.name} ➔ ${secondary.name} (+${activeCount - 1} failover)`;
     activeTranslatorNotice.style.color = 'var(--cyan)';
   } else if (primary) {
     activeTranslatorNotice.textContent = `Using Translator: ${primary.name} (${primary.model})`;
@@ -310,6 +385,33 @@ function setupEventListeners() {
     });
   });
 
+  // Translation Engine Mode Switcher (Step 1)
+  translationModeRadios.forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      setTranslationMode(e.target.value);
+    });
+  });
+
+  // Translation Engine Mode Switcher (Settings Modal)
+  settingsTranslationModeRadios.forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      setTranslationMode(e.target.value);
+    });
+  });
+
+  // Candidate Inspector Modal Close Events
+  if (closeInspectorBtn) {
+    closeInspectorBtn.addEventListener('click', closeCandidateInspector);
+  }
+  if (closeInspectorFooterBtn) {
+    closeInspectorFooterBtn.addEventListener('click', closeCandidateInspector);
+  }
+  if (candidateInspectorModal) {
+    candidateInspectorModal.addEventListener('click', (e) => {
+      if (e.target === candidateInspectorModal) closeCandidateInspector();
+    });
+  }
+
   // Primary Action Button: Generate Subtitles & Play
   generateBtn.addEventListener('click', handleStartPipeline);
 
@@ -329,7 +431,7 @@ function setupEventListeners() {
     });
   }
 
-  // Re-translate with AI Fallback Chain
+  // Re-translate with AI Fallback Chain or Ensemble
   sendToTranslatorBtn.addEventListener('click', async () => {
     if (!currentPipelineData || !currentPipelineData.jobId) {
       settingsModal.classList.remove('hidden');
@@ -339,13 +441,17 @@ function setupEventListeners() {
     const primaryProv = translationProviders[0] || { name: 'Primary AI', model: 'qwen3.8-27b' };
     const fallbackCount = Math.max(0, translationProviders.length - 1);
     const targetLangToUse = currentPipelineData.targetLang || 'both';
+    const isEnsemble = currentTranslationMode === 'ensemble' && translationProviders.length > 1;
+
+    const modeSummary = isEnsemble
+      ? `• Mode: 🏆 Multi-Model Ensemble Voting (${translationProviders.length} models in parallel)`
+      : `• Mode: ⚡ Fast Fallback (${primaryProv.name} with ${fallbackCount} failover)`;
 
     const confirmed = confirm(
-      `Re-translate this video using the AI Fallback Chain?\n\n` +
-      `• Primary Engine: ${primaryProv.name} (${primaryProv.model})\n` +
-      `• Fallback Providers: ${fallbackCount} configured\n` +
+      `Re-translate this video?\n\n` +
+      `${modeSummary}\n` +
       `• Target Language: ${targetLangToUse.toUpperCase()}\n\n` +
-      `This will run your Japanese transcript through the translation chain immediately without re-extracting audio!`
+      `This will run your Japanese transcript through the translation engine immediately without re-extracting audio!`
     );
 
     if (!confirmed) return;
@@ -353,7 +459,7 @@ function setupEventListeners() {
     sendToTranslatorBtn.disabled = true;
     const origBtnText = sendToTranslatorBtn.innerHTML;
     sendToTranslatorBtn.innerHTML = '⏳ Translating...';
-    appendActivityLog(`[Re-translation] Dispatched to ${primaryProv.name} with automatic failover...`, 'system');
+    appendActivityLog(`[Re-translation] Dispatched via ${isEnsemble ? 'Multi-Model Ensemble Voting' : primaryProv.name}...`, 'system');
 
     try {
       const res = await fetch('/api/retranslate', {
@@ -362,6 +468,7 @@ function setupEventListeners() {
         body: JSON.stringify({
           jobId: currentPipelineData.jobId,
           targetLang: targetLangToUse,
+          translationMode: currentTranslationMode,
           hindiScript: (document.querySelector('input[name="hindiScript"]:checked') || {}).value || 'devanagari',
           translationProviders: translationProviders
         })
@@ -691,20 +798,28 @@ function setupEventListeners() {
       }
     });
 
-    // 3. Persist to localStorage
+    // 3. Read translationMode from settings radio
+    const checkedSettingsMode = (document.querySelector('input[name="settingsTranslationMode"]:checked') || {}).value;
+    if (checkedSettingsMode) {
+      setTranslationMode(checkedSettingsMode);
+    }
+
+    // 4. Persist to localStorage
     localStorage.setItem('nihonsub_settings_v3', JSON.stringify({
       transcriptionConfig,
-      translationProviders
+      translationProviders,
+      translationMode: currentTranslationMode
     }));
 
     updateCustomTranslatorUI();
 
-    // 4. Send to server
+    // 5. Send to server
     try {
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          translationMode: currentTranslationMode,
           transcription: transcriptionConfig,
           translationProviders: translationProviders
         })
@@ -1006,13 +1121,18 @@ async function handleStartPipeline() {
     appendActivityLog(`Hindi script style: ${hindiScript === 'hinglish' ? 'Hinglish (Roman Script)' : 'Devanagari (देवनागरी)'}`, 'system');
   }
 
-  // Append Speech-to-Text & Translation Fallback Chain configurations
+  // Append Speech-to-Text, Translation Mode, & Translation Providers configurations
+  formData.append('translationMode', currentTranslationMode);
   formData.append('transcriptionConfig', JSON.stringify(transcriptionConfig));
   formData.append('translationProviders', JSON.stringify(translationProviders));
 
   const primaryProv = translationProviders[0] || { name: 'Groq LPU', model: 'qwen3.8-27b' };
   const fallbackProvCount = Math.max(0, translationProviders.length - 1);
-  appendActivityLog(`[Engine Pipeline] Speech-to-Text: ${transcriptionConfig.model} | Translation: ${primaryProv.name} (${fallbackProvCount} fallback${fallbackProvCount === 1 ? '' : 's'})`, 'system');
+  if (currentTranslationMode === 'ensemble' && translationProviders.length > 1) {
+    appendActivityLog(`[Engine Pipeline] Speech-to-Text: ${transcriptionConfig.model} | 🏆 Ensemble: Dispatching to ${translationProviders.length} models in parallel with consensus clustering & voting`, 'system');
+  } else {
+    appendActivityLog(`[Engine Pipeline] Speech-to-Text: ${transcriptionConfig.model} | Translation: ${primaryProv.name} (${fallbackProvCount} fallback${fallbackProvCount === 1 ? '' : 's'})`, 'system');
+  }
 
   try {
     const response = await fetch('/api/process', {
@@ -1245,12 +1365,28 @@ function renderTranscript(segments) {
 
     const formattedText = escapeHtml(seg.text).replace(/\n/g, '<br>');
 
+    let ensembleBadgeHtml = '';
+    if (seg.ensemble && seg.ensemble.candidates && seg.ensemble.candidates.length > 0) {
+      const votes = seg.ensemble.consensusCount || 1;
+      const total = seg.ensemble.totalVotes || seg.ensemble.candidates.length;
+      ensembleBadgeHtml = `<button type="button" class="ensemble-badge-btn" title="Inspect model candidates & consensus votes" data-index="${index}">🏆 ${votes}/${total} Consensus</button>`;
+    }
+
     item.innerHTML = `
       <div class="item-meta">
         <span class="time-stamp">${formatSeconds(seg.start)} ➔ ${formatSeconds(seg.end)}</span>
+        ${ensembleBadgeHtml}
       </div>
       <div class="item-text-ja">${formattedText}</div>
     `;
+
+    const badgeBtn = item.querySelector('.ensemble-badge-btn');
+    if (badgeBtn) {
+      badgeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openCandidateInspector(seg, index);
+      });
+    }
 
     item.addEventListener('click', () => {
       mainVideoPlayer.currentTime = Math.max(0, seg.start - timeOffset);
@@ -1261,6 +1397,123 @@ function renderTranscript(segments) {
   });
 
   transcriptList.appendChild(fragment);
+}
+
+function openCandidateInspector(seg, index) {
+  if (!candidateInspectorModal) return;
+  inspectingSegment = seg;
+  inspectingSegmentIndex = index;
+
+  inspectorSegmentIdBadge.textContent = `Segment #${index + 1}`;
+  inspectorTimeSlot.textContent = `${formatSeconds(seg.start)} ➔ ${formatSeconds(seg.end)} (${(seg.end - seg.start).toFixed(1)}s)`;
+
+  // Find original Japanese dialogue
+  let jaText = seg.japanese_text || seg.origText || '';
+  if (!jaText && activeSubtitlesData && activeSubtitlesData.ja && activeSubtitlesData.ja.segments) {
+    const origSeg = activeSubtitlesData.ja.segments.find(s => s.id === seg.id);
+    if (origSeg) jaText = origSeg.text;
+  }
+  if (!jaText) jaText = seg.text;
+  inspectorJaText.textContent = jaText;
+
+  if (seg.acousticAudioTranslation) {
+    inspectorAcousticRow.classList.remove('hidden');
+    inspectorAcousticText.textContent = `"${seg.acousticAudioTranslation}"`;
+  } else {
+    inspectorAcousticRow.classList.add('hidden');
+  }
+
+  const consensusVotes = seg.ensemble?.consensusCount || 1;
+  const totalVotes = seg.ensemble?.totalVotes || seg.ensemble?.candidates?.length || 1;
+  inspectorConsensusBadge.textContent = `🗳️ ${consensusVotes} of ${totalVotes} Models in Agreement (${Math.round((consensusVotes / totalVotes) * 100)}% Consensus)`;
+
+  renderCandidateList(seg, index);
+  candidateInspectorModal.classList.remove('hidden');
+}
+
+function renderCandidateList(seg, index) {
+  candidatesListContainer.innerHTML = '';
+  const cands = seg.ensemble?.candidates || [];
+
+  if (cands.length === 0) {
+    candidatesListContainer.innerHTML = '<div class="empty-state">No candidate history recorded for this segment.</div>';
+    return;
+  }
+
+  cands.forEach((cand, cIdx) => {
+    const isWinner = Boolean(cand.isWinner || cand.text === seg.text);
+    const card = document.createElement('div');
+    card.className = `candidate-item-card ${isWinner ? 'winner' : ''} ${cand.isOutlier ? 'outlier' : ''}`;
+
+    card.innerHTML = `
+      <div class="candidate-header">
+        <div class="candidate-prov-info">
+          <span class="candidate-prov-name">${escapeHtml(cand.provider)}</span>
+          <span class="candidate-prov-model">(${escapeHtml(cand.model)})</span>
+        </div>
+        <div class="candidate-badges">
+          ${isWinner ? '<span class="candidate-winner-tag">🏆 Active Subtitle</span>' : ''}
+          ${cand.isOutlier ? '<span class="candidate-outlier-tag">⚠️ Discarded Outlier</span>' : `<span class="candidate-score-tag">Score: ${cand.score}/100</span>`}
+          <span class="candidate-cps-tag">${cand.cps || (cand.text.length / Math.max(0.6, seg.end - seg.start)).toFixed(1)} CPS</span>
+        </div>
+      </div>
+      <div class="candidate-body">
+        <div class="candidate-text-content">${escapeHtml(cand.text)}</div>
+        <div class="candidate-actions">
+          <button type="button" class="btn-apply-cand ${isWinner ? 'active' : ''}" data-cand-idx="${cIdx}">
+            ${isWinner ? '✓ Active' : 'Apply Translation'}
+          </button>
+        </div>
+      </div>
+    `;
+
+    const applyBtn = card.querySelector('.btn-apply-cand');
+    if (!isWinner && applyBtn) {
+      applyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        applyCandidateAsWinner(seg, index, cand);
+      });
+    }
+
+    candidatesListContainer.appendChild(card);
+  });
+}
+
+function applyCandidateAsWinner(seg, index, chosenCand) {
+  seg.text = chosenCand.text;
+  if (seg.ensemble && seg.ensemble.candidates) {
+    seg.ensemble.candidates.forEach(c => {
+      c.isWinner = (c.text === chosenCand.text && c.provider === chosenCand.provider);
+    });
+    seg.ensemble.winner = chosenCand.provider;
+    seg.ensemble.winnerModel = chosenCand.model;
+    seg.ensemble.winnerScore = chosenCand.score;
+  }
+
+  // Update in activeSubtitlesData if present
+  const currentTrackKey = subLangSelect.value;
+  if (activeSubtitlesData && activeSubtitlesData[currentTrackKey] && activeSubtitlesData[currentTrackKey].segments) {
+    const match = activeSubtitlesData[currentTrackKey].segments.find(s => s.id === seg.id);
+    if (match) {
+      match.text = chosenCand.text;
+      match.ensemble = seg.ensemble;
+    }
+  }
+
+  // Re-render transcript & active item
+  renderTranscript(activeSegments);
+  updateTranscriptActiveItem(activeSegmentIndex);
+  onVideoTimeUpdate();
+
+  // Re-render candidates list to reflect new winner
+  renderCandidateList(seg, index);
+  appendActivityLog(`[Candidate Override] Segment #${index + 1} updated to: "${chosenCand.text}" (${chosenCand.provider})`, 'system');
+}
+
+function closeCandidateInspector() {
+  if (candidateInspectorModal) {
+    candidateInspectorModal.classList.add('hidden');
+  }
 }
 
 function updateTranscriptActiveItem(index) {
